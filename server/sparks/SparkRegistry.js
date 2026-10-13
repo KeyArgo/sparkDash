@@ -27,16 +27,16 @@ export class SparkRegistry {
 
   // ─── Accessors ──────────────────────────────────────────
   get sparks() {
-    return this._sparks.map((s) => this._withSecrets(s));
+    return this._sparks.filter((s) => s.enabled !== false).map((s) => this._withSecrets(s));
   }
 
   /** Public-safe list (no secrets). */
   get publicSparks() {
-    return this._sparks.map((s) => this.toPublic(s));
+    return this._sparks.filter((s) => s.enabled !== false).map((s) => this.toPublic(s));
   }
 
   get sparkIds() {
-    return this._sparks.map((s) => s.id);
+    return this._sparks.filter((s) => s.enabled !== false).map((s) => s.id);
   }
 
   /** Find a Spark by ID (includes in-memory secrets if present). */
@@ -302,7 +302,9 @@ export class SparkRegistry {
         console.warn(
           `[SparkRegistry] migrated LLM API key for spark ${spark.id}: port ${orphans[0]} -> port ${missing[0]} after out-of-band config change`
         );
-      } else if (orphans.length > 0 || missing.length > 0) {
+      } else if (orphans.length > 0 || (keyed.length > 0 && missing.length > 0)) {
+        // Ports with no key at all are normal. Warn only when stored keys
+        // no longer line up with the configured ports.
         console.warn(
           `[SparkRegistry] spark ${spark.id} LLM key/port mismatch: keyed=<${orphans.join(", ")}> missing=<${missing.join(", ")}>`
         );
@@ -594,6 +596,8 @@ export class SparkRegistry {
       /** Last MAC seen on enP7s7 (auto; not set via public PATCH). */
       detectedMacAddress: config.detectedMacAddress || null,
       isLocal: Boolean(config.isLocal),
+      /** false keeps the record on disk but out of the dashboard and monitors. */
+      enabled: config.enabled !== false,
       ssh,
       llmPorts,
       role,

@@ -5,6 +5,7 @@ import { shutdownAllSparks, updateAllHermes, wakeAllSparks } from "../../api/cli
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { MetricBar } from "../ui/MetricBar";
 import { FleetEnergyCard } from "./FleetEnergyCard";
+import { FleetCoverage } from "./FleetCoverage";
 import { FleetAlertStrip } from "./FleetAlertStrip";
 import { ActivityIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
 
@@ -336,7 +337,8 @@ function SparkCard({
 
               // Head / Standalone: same as before — live backend + model id.
               const llmArr = spark.metrics.llm;
-              const llm = Array.isArray(llmArr) ? llmArr.find((l) => l.available) : null;
+              const loaded = Array.isArray(llmArr) ? llmArr.filter((l) => l.available && l.modelId) : [];
+              const llm = loaded.sort((a, b) => (b.generationTps || 0) - (a.generationTps || 0))[0] ?? null;
               if (!llm) return null;
               return (
                 <MiniStat
@@ -351,7 +353,11 @@ function SparkCard({
                             ? "EXL3"
                             : llm.backend === "q27"
                               ? "q27"
-                              : llm.backend ?? "LLM"
+                              : llm.backend === "ollama"
+                                ? "Ollama"
+                                : llm.backend === "llama.cpp"
+                                  ? "llama.cpp"
+                                  : llm.backend ?? "LLM"
                   }
                   value={llm.modelId ?? "unknown"}
                   tone="accent"
@@ -366,8 +372,16 @@ function SparkCard({
             const role = resolveSparkRole(spark);
             if (role === "worker") return null;
             const llmArr = spark.metrics.llm;
-            const llm = Array.isArray(llmArr) ? llmArr.find((l) => l.available) : null;
+            const loaded = Array.isArray(llmArr) ? llmArr.filter((l) => l.available && l.modelId) : [];
+            const llm = loaded.sort((a, b) => (b.generationTps || 0) - (a.generationTps || 0))[0] ?? null;
             if (!llm) return null;
+            if (llm.headless) {
+              return (
+                <div className="mt-3.5 border-t border-border pt-3 text-center text-xs text-muted">
+                  worker · tok/s on the head
+                </div>
+              );
+            }
             return (
               <div className="mt-3.5 grid grid-cols-2 gap-2 border-t border-border pt-3">
                 <div className="text-center">
@@ -567,6 +581,7 @@ export function OverviewPage({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-overview-rhythm)" }}>
       {showFleetEnergy ? <FleetEnergyCard nodeCount={sparks.length} /> : null}
+      <FleetCoverage />
       {showFleetExceptions ? <FleetAlertStrip sparks={sparks} onSelect={onSelectSpark} /> : null}
       <div className="flex flex-wrap items-end justify-between gap-6">
         <h1

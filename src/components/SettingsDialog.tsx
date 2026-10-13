@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchSettings, updateSettings } from "../api/client";
+import { getPlugins } from "../plugins";
 import type { Settings } from "../api/types";
 import { useModalPresence } from "../hooks/useModalPresence";
 import packageJson from "../../package.json";
@@ -400,6 +401,23 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
             </div>
           </div>
         )}
+
+            {getPlugins().some((plugin) => plugin.SettingsPanel) && (
+              <div className="border-t border-border pt-3">
+                <div className="mb-3 text-[10px] font-semibold uppercase tracking-wide text-muted">
+                  Integrations
+                </div>
+                <div className="space-y-3">
+                  {getPlugins().map((plugin) =>
+                    plugin.SettingsPanel ? (
+                      <div key={plugin.id} className="rounded border border-border bg-surface p-3">
+                        <plugin.SettingsPanel settings={settings} updateSettings={update} />
+                      </div>
+                    ) : null
+                  )}
+                </div>
+              </div>
+            )}
 
         {/* Links */}
         <div className="mt-5 flex flex-wrap items-center gap-3 border-t border-border pt-3">

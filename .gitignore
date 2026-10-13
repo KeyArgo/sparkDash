@@ -4,6 +4,12 @@ dist/
 sparks.json
 config/sparks-secrets.json
 config/.secrets-key
+config/admin-secret.json
+config/.session-secret
+config/fleet-litellm.json
+config/profiles.json
+config/launch-prefs.json
+config/serving-config.json
 config/bench-history.json
 config/bench-active.json
 config/prefill-bench-history.json

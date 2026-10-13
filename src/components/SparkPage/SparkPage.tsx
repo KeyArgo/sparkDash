@@ -11,6 +11,10 @@ import { NetworkPanel } from "./NetworkPanel";
 import { TailscalePanel } from "./TailscalePanel";
 import { LlmPanel } from "./LlmPanel";
 import { ComfyPanel } from "./ComfyPanel";
+import { ModelPanel } from "./ModelPanel";
+import { ServingConfigPanel } from "./ServingConfigPanel";
+import { SparkRunPanel } from "./SparkRunPanel";
+import { ServingStrip } from "./ServingStrip";
 import { ChevronDownIcon } from "../ui/icons";
 
 interface SparkPageProps {
@@ -18,6 +22,8 @@ interface SparkPageProps {
   temperatureUnit: "celsius" | "fahrenheit";
   /** Show "Copy image" in the benchmark dialogs (Settings, off by default). */
   benchShareImage?: boolean;
+  /** Protected Spark and this session is not admin. */
+  locked?: boolean;
   onEdit?: () => void;
 }
 
@@ -82,6 +88,7 @@ export function SparkPage({
   spark,
   temperatureUnit,
   benchShareImage = false,
+  locked = false,
   onEdit,
 }: SparkPageProps) {
   const { metrics } = spark;
@@ -230,6 +237,14 @@ export function SparkPage({
         className="flex flex-wrap items-center justify-end gap-2 px-1 py-1 sm:hidden"
       />
       <div className="spark-page grid grid-cols-1 md:grid-cols-2" style={{ gap: "var(--density-page-gap)" }}>
+        {llmOn && (
+          <ServingStrip
+            sparkId={spark.id}
+            ports={llmPorts}
+            llms={llmPorts.map((_, i) => metrics.llm?.[i])}
+            locked={locked}
+          />
+        )}
         <SectionHeading
           title="Resources"
           open={resourcesOpen}
@@ -317,6 +332,7 @@ export function SparkPage({
           <>
             {llmOn &&
               primaryPort != null &&
+              (!(metrics.llm || []).some((row) => row?.modelId) || metrics.llm?.[0]?.modelId) &&
               renderLlmPanel(
                 primaryPort,
                 0,
@@ -333,11 +349,13 @@ export function SparkPage({
             )}
             {llmOn &&
               extraPorts.map((port, j) =>
-                renderLlmPanel(
-                  port,
-                  j + 1,
-                  extraLlmFullWidth(j, extraPorts.length) ? "md:col-span-2" : undefined
-                )
+                (metrics.llm || []).some((row) => row?.modelId) && !metrics.llm?.[j + 1]?.modelId
+                  ? null
+                  : renderLlmPanel(
+                      port,
+                      j + 1,
+                      extraLlmFullWidth(j, extraPorts.length) ? "md:col-span-2" : undefined
+                    )
               )}
             {llmOn &&
               (showAddPort ? (
@@ -391,6 +409,19 @@ export function SparkPage({
               ))}
           </>
         )}
+        <div className="md:col-span-2">
+          <SparkRunPanel sparkId={spark.id} locked={locked} />
+        </div>
+        <div className="md:col-span-2">
+          <ModelPanel
+            sparkId={spark.id}
+            locked={locked}
+            vllmPort={llmPorts.find((p) => p !== 11434) ?? llmPorts[0]}
+          />
+        </div>
+        <div className="md:col-span-2">
+          <ServingConfigPanel sparkId={spark.id} locked={locked} />
+        </div>
       </div>
     </div>
   );

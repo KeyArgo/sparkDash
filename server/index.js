@@ -46,6 +46,20 @@ import {
 } from "./energy/FleetEnergyRuntime.js";
 import { testSparkConnectivity } from "./connectivity.js";
 import { inspectStartupPreflight, logStartupPreflight } from "./startupPreflight.js";
+import {
+  adminStatus,
+  clearAdminCookie,
+  filterVisibleSparks,
+  guardSpark,
+  hiddenSparkGuard,
+  isAdmin,
+  loadAdminHash,
+  makeAdminCookie,
+  PROTECTED_SPARKS,
+  verifyPassword,
+} from "./admin.js";
+import { loadPlugins, listPlugins, collectPluginSnapshot } from "./plugins/index.js";
+import { mountFleetRoutes } from "./fleetRoutes.js";
 
 dotenv.config();
 
@@ -322,12 +336,57 @@ function clientKey(req) {
   return req.ip || req.socket?.remoteAddress || "unknown";
 }
 
+// Per-Spark admin gate from sparkdeck. Fail-open until a password is set.
+// SPARKDASH_TOKEN (createAuthMiddleware above) still covers a non-loopback bind.
+const allowLogin = createRateLimiter(10, 60_000);
+
+app.get("/api/admin/status", (req, res) => {
+  res.json(adminStatus(req));
+});
+
+app.post("/api/admin/login", (req, res) => {
+  if (!allowLogin(clientKey(req))) {
+    return res.status(429).json({ error: "Too many attempts; try again shortly" });
+  }
+  const hash = loadAdminHash();
+  if (!hash) {
+    return res.status(400).json({ error: "No admin password is configured on the server." });
+  }
+  const password = req.body?.password;
+  if (verifyPassword(password, hash)) {
+    res.setHeader("Set-Cookie", makeAdminCookie());
+    return res.json({ success: true, admin: true });
+  }
+  setTimeout(() => res.status(401).json({ error: "Incorrect password" }), 800);
+});
+
+app.post("/api/admin/logout", (req, res) => {
+  res.setHeader("Set-Cookie", clearAdminCookie());
+  res.json({ success: true, admin: false });
+});
+
+app.use("/api/sparks", hiddenSparkGuard);
+
+const GUARD_EXEMPT_ACTIONS = new Set(["test", "refresh", "metrics"]);
+app.use("/api/sparks", (req, res, next) => {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
+  const segs = req.path.split("/").filter(Boolean);
+  const id = segs[0];
+  if (!id || id === "test" || id === "order" || id === "shutdown-all" || id === "wake-all" || id === "hermes") {
+    return next();
+  }
+  if (GUARD_EXEMPT_ACTIONS.has(segs[1])) return next();
+  const blocked = guardSpark(id, req);
+  if (blocked) return res.status(blocked.status).json(blocked.body);
+  next();
+});
+
 // ─── REST API ────────────────────────────────────────────
 registerFleetEnergyRoute(app, fleetEnergyTracker);
 
 // Never return SSH passwords in any response
-app.get("/api/sparks", (_req, res) => {
-  res.json({ sparks: registry.publicSparks });
+app.get("/api/sparks", (req, res) => {
+  res.json({ sparks: filterVisibleSparks(registry.publicSparks, isAdmin(req)) });
 });
 
 // Ephemeral connectivity test — does not persist or start a monitor
@@ -1485,15 +1544,22 @@ function initiateSparkShutdown(spark) {
 }
 
 /** Batch routes first so they never collide with /:id/* if routing changes. */
-app.post("/api/sparks/shutdown-all", async (_req, res) => {
+app.post("/api/sparks/shutdown-all", async (req, res) => {
   const results = [];
+  const admin = isAdmin(req);
+  const gated = Boolean(loadAdminHash()) && !admin;
+  const visible = filterVisibleSparks(registry.sparks, admin);
   // Remotes first, local last — shutting down the dashboard host mid-loop would
   // skip remaining Sparks.
   const ordered = [
-    ...registry.sparks.filter((s) => !s.isLocal),
-    ...registry.sparks.filter((s) => s.isLocal),
+    ...visible.filter((s) => !s.isLocal),
+    ...visible.filter((s) => s.isLocal),
   ];
   for (const spark of ordered) {
+    if (gated && PROTECTED_SPARKS.has(spark.id)) {
+      results.push({ id: spark.id, ok: false, skipped: true, error: "Admin-protected — skipped" });
+      continue;
+    }
     const monitor = monitors.get(spark.id);
     if (!monitor?.online) {
       results.push({ id: spark.id, ok: false, skipped: true, error: "Offline — skipped" });
@@ -1519,9 +1585,15 @@ app.post("/api/sparks/shutdown-all", async (_req, res) => {
   res.json({ success: true, results });
 });
 
-app.post("/api/sparks/wake-all", async (_req, res) => {
+app.post("/api/sparks/wake-all", async (req, res) => {
   const results = [];
-  for (const spark of registry.sparks) {
+  const admin = isAdmin(req);
+  const gated = Boolean(loadAdminHash()) && !admin;
+  for (const spark of filterVisibleSparks(registry.sparks, admin)) {
+    if (gated && PROTECTED_SPARKS.has(spark.id)) {
+      results.push({ id: spark.id, ok: false, skipped: true, error: "Admin-protected — skipped" });
+      continue;
+    }
     const cleanMac = effectiveMac(spark);
     if (!cleanMac) {
       results.push({
@@ -1609,6 +1681,14 @@ app.post("/api/sparks/:id/wake", async (req, res) => {
   }
 });
 
+mountFleetRoutes(app, { registry, orderedSnapshots });
+
+await loadPlugins(app);
+
+app.get("/api/plugins", (_req, res) => {
+  res.json({ plugins: listPlugins() });
+});
+
 // ─── Static files (built frontend) ───────────────────────
 const distDir = path.join(ROOT, "dist");
 const indexHtml = path.join(distDir, "index.html");
@@ -1631,12 +1711,13 @@ const wss = new WebSocketServer({
   path: "/ws",
   verifyClient: ({ req }, done) => done(authorizeUpgrade(req)),
 });
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  ws._isAdminViewer = isAdmin(req);
   console.log("[ws] client connected");
   // This snapshot belongs only to the new client. Broadcasting it would add a
   // duplicate history sample to every existing dashboard whenever a tab opens.
   try {
-    ws.send(buildSnapshotPayload());
+    ws.send(buildSnapshotPayload(ws._isAdminViewer));
   } catch {
     // The close handler will clean up a client that disappears during connect.
   }
@@ -1647,16 +1728,26 @@ wss.on("connection", (ws) => {
 
 // ─── Broadcast snapshot (dynamic interval) ────────────────
 let broadcastTimer = null;
-let _lastBroadcastPayload = null;
+let _lastBroadcastPayload = { admin: null, public: null };
 
-/** Build the snapshot payload string. Centralized so broadcast + refresh share it. */
-function buildSnapshotPayload() {
-  return JSON.stringify({
+/** Build the snapshot payload string for an admin or public viewer. */
+function buildSnapshotPayload(admin, generatedAt = Date.now()) {
+  const payload = {
     type: "snapshot",
-    generatedAt: Date.now(),
-    sparks: orderedSnapshots(),
+    generatedAt,
+    sparks: filterVisibleSparks(orderedSnapshots(), admin),
     refreshInterval: getSettings().pollIntervalMs,
-  });
+  };
+  const pluginData = collectPluginSnapshot(admin);
+  if (pluginData) payload.plugins = pluginData;
+  return JSON.stringify(payload);
+}
+
+function viewerPayloads(generatedAt = Date.now()) {
+  return {
+    admin: buildSnapshotPayload(true, generatedAt),
+    public: buildSnapshotPayload(false, generatedAt),
+  };
 }
 
 /**
@@ -1665,22 +1756,26 @@ function buildSnapshotPayload() {
  *   buffering on slow/flaky connections (e.g. phone over spotty WiFi).
  * - Returns the payload so callers can compare against the previous broadcast.
  */
-function broadcastPayload(payload) {
-  wss.clients.forEach((client) => {
-    if (client.readyState !== 1) return; // OPEN only
-    if (client.bufferedAmount > 1_000_000) {
-      try {
-        client.close(1008, "client too slow");
-      } catch {
-        /* ignore */
-      }
-      return;
-    }
+function sendToClient(client, payload) {
+  if (client.readyState !== 1) return;
+  if (client.bufferedAmount > 1_000_000) {
     try {
-      client.send(payload);
+      client.close(1008, "client too slow");
     } catch {
-      /* per-client send failure — ignore, close handler will clean up */
+      /* ignore */
     }
+    return;
+  }
+  try {
+    client.send(payload);
+  } catch {
+    /* per-client send failure — ignore, close handler will clean up */
+  }
+}
+
+function broadcastPayloads(payloads) {
+  wss.clients.forEach((client) => {
+    sendToClient(client, client._isAdminViewer ? payloads.admin : payloads.public);
   });
 }
 
@@ -1690,20 +1785,23 @@ function broadcastPayload(payload) {
  * UI reflects the result right away instead of on the next poll tick.
  */
 function forceBroadcast() {
-  const payload = buildSnapshotPayload();
-  _lastBroadcastPayload = payload;
-  broadcastPayload(payload);
+  const payloads = viewerPayloads();
+  _lastBroadcastPayload = payloads;
+  broadcastPayloads(payloads);
 }
 
 function startBroadcast() {
   const interval = getSettings().pollIntervalMs;
   broadcastTimer = setInterval(() => {
-    const payload = buildSnapshotPayload();
-    // Skip the broadcast entirely when nothing changed since the last tick.
-    // A 1s poll that produces identical snapshots becomes free for idle tabs.
-    if (_lastBroadcastPayload !== null && payload === _lastBroadcastPayload) return;
-    _lastBroadcastPayload = payload;
-    broadcastPayload(payload);
+    const now = Date.now();
+    const payloads = viewerPayloads(now);
+    // generatedAt changes every tick, so compare the spark bodies without it.
+    const same =
+      _lastBroadcastPayload.admin === payloads.admin &&
+      _lastBroadcastPayload.public === payloads.public;
+    if (same) return;
+    _lastBroadcastPayload = payloads;
+    broadcastPayloads(payloads);
   }, interval);
 }
 
@@ -1712,7 +1810,7 @@ function restartBroadcast() {
     clearInterval(broadcastTimer);
     broadcastTimer = null;
   }
-  _lastBroadcastPayload = null; // force a fresh broadcast on the new cadence
+  _lastBroadcastPayload = { admin: null, public: null };
   startBroadcast();
 }
 

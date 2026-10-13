@@ -33,6 +33,9 @@ const DEFAULTS = Object.freeze({
    * does not want it can turn it off here (see the README's settings table).
    */
   benchShareImage: true,
+  /** Tessera console health check in Settings. */
+  tesseraEnabled: true,
+  tesseraUrl: "http://localhost:5056",
 });
 
 /** @type {typeof DEFAULTS} */
@@ -56,6 +59,11 @@ function _clampSettings(settings) {
   s.showFleetEnergy = Boolean(s.showFleetEnergy);
   s.showFleetExceptions = Boolean(s.showFleetExceptions);
   s.showOverviewSearch = Boolean(s.showOverviewSearch);
+  s.benchShareImage = s.benchShareImage !== false;
+  s.tesseraEnabled = s.tesseraEnabled !== false;
+  if (typeof s.tesseraUrl !== "string" || s.tesseraUrl.length > 500) {
+    s.tesseraUrl = DEFAULTS.tesseraUrl;
+  }
   // Ensure temperatureUnit is valid
   if (s.temperatureUnit !== "celsius" && s.temperatureUnit !== "fahrenheit") {
     s.temperatureUnit = DEFAULTS.temperatureUnit;

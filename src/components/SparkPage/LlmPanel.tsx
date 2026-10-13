@@ -269,23 +269,29 @@ function LlmLaunchers({
   );
 }
 
+const BACKEND_LABELS: Record<string, string> = {
+  vllm: "vLLM",
+  "llama.cpp": "llama.cpp",
+  sglang: "sgLang",
+  ds4: "ds4",
+  exl3: "EXL3",
+  q27: "q27",
+  ollama: "Ollama",
+};
+
+function backendLabel(backend: string | null | undefined): string {
+  if (!backend) return "LLM";
+  return BACKEND_LABELS[backend] || backend;
+}
+
 /** Backend badge — neutral surfaces with a single accent dot. No blue/purple. */
 function BackendBadge({ backend }: { backend: string | null }) {
   if (!backend) return <span className="text-xs text-muted">No backend</span>;
 
-  const labels: Record<string, string> = {
-    vllm: "vLLM",
-    "llama.cpp": "llama.cpp",
-    sglang: "sgLang",
-    ds4: "ds4",
-    exl3: "EXL3",
-    q27: "q27",
-  };
-
   return (
     <span className="llm-badge">
       <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-      {labels[backend] || backend}
+      {backendLabel(backend)}
     </span>
   );
 }
@@ -665,8 +671,18 @@ export function LlmPanel({
             <p className="text-xs text-muted">
               {llm?.posture?.auth === "protected"
                 ? `${llm.posture.label} on :${llmPort}`
-                : `No model loaded on :${llmPort}`}
+                : llm?.backend
+                  ? `${backendLabel(llm.backend)} on :${llmPort} — nothing loaded`
+                  : `No model loaded on :${llmPort}`}
             </p>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted">Generation tok/s</span>
+            <span className="font-tabular text-sm font-semibold text-accent">0.0</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted">Prefill tok/s</span>
+            <span className="font-tabular text-sm font-semibold text-text">0.0</span>
           </div>
           <LlmLaunchers
             sparkId={sparkId}
@@ -694,6 +710,11 @@ export function LlmPanel({
             )}
             <span className="shrink-0 font-tabular text-[10px] text-muted">:{llmPort}</span>
           </div>
+          {llm?.headless && (
+            <p className="text-[11px] text-muted">
+              This Spark is the other half of the model. The API and tok/s are on the head.
+            </p>
+          )}
           {llm?.modelPath &&
             llm.modelPath !== llm.modelId &&
             !llm.modelPath.includes("models--") && (

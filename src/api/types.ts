@@ -283,7 +283,7 @@ export interface UnifiedMemoryMetrics {
 // ─── LLM metrics ─────────────────────────────────────────
 export interface LlmMetrics {
   available: boolean;
-  backend: "vllm" | "llama.cpp" | "sglang" | "ds4" | "exl3" | "q27" | null;
+  backend: "vllm" | "llama.cpp" | "sglang" | "ds4" | "exl3" | "q27" | "ollama" | null;
   modelId: string | null;
   modelPath: string | null;
   contextLength: number | null;
@@ -293,6 +293,8 @@ export interface LlmMetrics {
   slotsTotal: number;
   generationTps: number;
   prefillTps: number;
+  /** True when this Spark is a headless worker. The API and tok/s are on the head. */
+  headless?: boolean;
   /** Live cached-prefill tok/s when the backend splits kinds (ds4, llama.cpp, sglang). */
   cachedPrefillTps?: number | null;
   /** Live uncached/computed prefill tok/s when split is available. */
@@ -564,6 +566,10 @@ export interface Settings {
   showOverviewSearch: boolean;
   /** Benchmark dialogs offer "Copy image" — a PNG share card of the results. */
   benchShareImage: boolean;
+  /** Tessera console integration. On unless explicitly disabled. */
+  tesseraEnabled?: boolean;
+  /** Tessera console base URL. */
+  tesseraUrl?: string;
 }
 
 export interface SparksListResponse {

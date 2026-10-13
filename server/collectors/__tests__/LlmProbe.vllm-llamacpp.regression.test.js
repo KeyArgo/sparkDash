@@ -109,6 +109,23 @@ test("vLLM probe: counter diffs + tiles; skips get_server_info when known vllm",
   assert.ok(!hits.some((h) => h.includes("get_server_info")));
 });
 
+test("vLLM holds the last rate while a request is still running", () => {
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 8000);
+  probe.lastTokenCounts = { input: 1000, output: 500 };
+  probe._applyVllmMetrics(VLLM_METRICS.replace("500.0", "700.0"), 2);
+  assert.equal(probe.generationTps, 100);
+  probe._applyVllmMetrics(VLLM_METRICS.replace("500.0", "700.0"), 2);
+  assert.equal(probe.generationTps, 100);
+  probe._applyVllmMetrics(
+    VLLM_METRICS.replace("500.0", "700.0").replace(
+      'vllm:num_requests_running{engine="0"} 2.0',
+      'vllm:num_requests_running{engine="0"} 0.0'
+    ),
+    2
+  );
+  assert.equal(probe.generationTps, 0);
+});
+
 test("vLLM idle: flat counters → 0 tok/s (not sticky gauge logic)", async () => {
   const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 8000);
   probe.serverIsOpenAI = true;

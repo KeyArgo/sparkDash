@@ -85,6 +85,21 @@ export function useSnapshot() {
     };
   }, []);
 
+  /** Drop the socket and open a new one. Needed after admin login so the
+   * server re-reads the session cookie and includes hidden Sparks. */
+  const reconnect = useCallback(() => {
+    clearTimeout(reconnectTimer.current);
+    const ws = wsRef.current;
+    if (ws) {
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.close();
+    }
+    wsRef.current = null;
+    connect();
+  }, [connect]);
+
   // ─── Lifecycle ───────────────────────────────────────────
   useEffect(() => {
     shouldReconnect.current = true;
@@ -116,5 +131,6 @@ export function useSnapshot() {
     snapshotGeneratedAt,
     snapshotError,
     refreshInterval,
+    reconnect,
   };
 }

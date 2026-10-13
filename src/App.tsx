@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useSnapshot } from "./hooks/useSnapshot";
 import { useAppRoute, useRoute } from "./hooks/useRoute";
 import { fetchSparks, reorderSparks, fetchSettings } from "./api/client";
@@ -12,6 +12,8 @@ import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { GearIcon, BoltIcon } from "./components/ui/icons";
+import { AdminBar } from "./components/AdminBar";
+import { useAdmin } from "./hooks/useAdmin";
 import { ConnectionBanner } from "./components/ui/ConnectionBanner";
 import { ErrorBanner } from "./components/ui/ErrorBanner";
 import { OVERVIEW_ID } from "./constants";
@@ -133,6 +135,7 @@ function DashboardApp() {
     lastValidSnapshotAt,
     snapshotError,
     refreshInterval,
+    reconnect,
   } = useSnapshot();
   const [telemetryNow, setTelemetryNow] = useState(Date.now());
   const navigate = useRoute(setActiveId);
@@ -141,6 +144,19 @@ function DashboardApp() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const admin = useAdmin();
+  const adminSeen = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!admin.loaded) return;
+    if (adminSeen.current === null) {
+      adminSeen.current = admin.isAdmin;
+      return;
+    }
+    if (adminSeen.current !== admin.isAdmin) {
+      adminSeen.current = admin.isAdmin;
+      reconnect();
+    }
+  }, [admin.loaded, admin.isAdmin, reconnect]);
   /** Used when WS is down so add/delete still updates the tab bar */
   const [fallbackSparks, setFallbackSparks] = useState<SparkSnapshot[]>([]);
   const staleAfterMs = Math.max(10_000, 3 * (refreshInterval ?? 2_000));
@@ -325,6 +341,7 @@ function DashboardApp() {
             onReorder={handleReorder}
           />
           <div className="ml-auto flex items-center gap-2.5">
+            <AdminBar admin={admin} />
             <button
               type="button"
               onClick={() => setShowSettings(true)}
@@ -345,6 +362,12 @@ function DashboardApp() {
           stale={telemetryStale}
         />
         <ErrorBanner message={actionError} onDismiss={() => setActionError(null)} />
+        {admin.loaded && !admin.configured && admin.protectedIds.length > 0 && (
+          <div className="mb-3 rounded border border-border bg-surface px-3 py-2 text-xs text-muted" role="status">
+            No admin password is set, so protected Sparks ({admin.protectedIds.join(", ")}) are unlocked.
+            Run <code className="text-text">node scripts/set-admin-password.mjs</code> and restart the dashboard.
+          </div>
+        )}
         <main className={telemetryStale || !connected ? "telemetry-stale" : undefined}>
           {isOverview ? (
             <OverviewPage
@@ -362,6 +385,7 @@ function DashboardApp() {
               spark={displayActive}
               temperatureUnit={settings?.temperatureUnit ?? "celsius"}
               benchShareImage={settings?.benchShareImage ?? false}
+              locked={admin.isLocked(displayActive.id)}
               onEdit={() => setEditId(displayActive.id)}
             />
           ) : (

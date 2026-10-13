@@ -73,6 +73,11 @@ export function SparkHeader({ spark, onEdit }: SparkHeaderProps) {
                 </>
               );
             })()}
+            {!online && (
+              <span className="shrink-0 rounded bg-danger/15 px-1.5 py-0.5 text-[10px] font-medium text-danger">
+                not found
+              </span>
+            )}
             {online && spark.uptime != null && (
               <span
                 className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 font-tabular text-[10px] font-medium text-accent"

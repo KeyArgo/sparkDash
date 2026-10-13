@@ -66,7 +66,7 @@ export class LlmProbe {
     this.baseUrl = `http://${llmProbeHost(spark)}:${port}`;
 
     // State
-    this.backendType = null; // 'vllm' | 'llama.cpp' | 'sglang' | 'ds4' | 'exl3' | 'q27' | null
+    this.backendType = null; // 'vllm' | 'llama.cpp' | 'sglang' | 'ds4' | 'exl3' | 'q27' | 'ollama' | null
     this.serverIsOpenAI = null; // true = OpenAI-compatible
     /** Whether /v1/models (or /slots) answered without credentials. null = unknown. */
     this.authOpen = null;
@@ -207,7 +207,11 @@ export class LlmProbe {
         this._lastDetectAt = Date.now();
       }
 
-      if (this.serverIsOpenAI === false) {
+      if (this.backendType === "ollama") {
+        const snap = await this._probeOllama();
+        this._noteSuccess();
+        return snap;
+      } else if (this.serverIsOpenAI === false) {
         const snap = await this._probeLlamaCpp();
         this._noteSuccess();
         return snap;
@@ -288,6 +292,18 @@ export class LlmProbe {
 
   // ─── Server type detection ───────────────────────────────
   async _detectServerType() {
+    // Ollama's /v1/models lists everything installed, not what is resident.
+    // /api/ps is the loaded set. Check it before the OpenAI classifier so a
+    // library tag is not reported as a running vLLM model.
+    if (this.backendType == null || this.backendType === "ollama") {
+      if (await this._probeIsOllama()) {
+        this.serverIsOpenAI = true;
+        this.backendType = "ollama";
+        this.authOpen = true;
+        return;
+      }
+    }
+
     // Skip the llama.cpp /slots probe once we've positively identified an
     // OpenAI-compatible backend. vLLM / sglang / ds4-server have no /slots,
     // so re-probing it on every re-detect cycle just spams 404s in the
@@ -298,7 +314,8 @@ export class LlmProbe {
       this.backendType !== "sglang" &&
       this.backendType !== "ds4" &&
       this.backendType !== "exl3" &&
-      this.backendType !== "q27"
+      this.backendType !== "q27" &&
+      this.backendType !== "ollama"
     ) {
       const slotUrl = `${this.baseUrl}/slots`;
       try {
@@ -342,6 +359,50 @@ export class LlmProbe {
 
     this.serverIsOpenAI = null;
     this.backendType = null;
+  }
+
+  /** True when this port is the Ollama daemon (/api/version + /api/ps). */
+  async _probeIsOllama() {
+    try {
+      const ver = await this._fetch(`${this.baseUrl}/api/version`);
+      if (!ver.ok) return false;
+      const version = await ver.json().catch(() => null);
+      if (!version || typeof version.version !== "string") return false;
+      const ps = await this._fetch(`${this.baseUrl}/api/ps`);
+      if (!ps.ok) return false;
+      const data = await ps.json().catch(() => null);
+      return !!data && Array.isArray(data.models);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Loaded models come from /api/ps. An empty list means the daemon is up
+   * and nothing is resident — do not fall through to /v1/models.
+   * Ollama does not publish live tok/s; the counters stay 0 until a backend
+   * that exposes them is on this port.
+   */
+  async _probeOllama() {
+    this.lastProbeTime = Date.now();
+    const psRes = await this._fetch(`${this.baseUrl}/api/ps`);
+    if (!psRes.ok) throw new Error("Ollama /api/ps unreachable");
+    const data = await psRes.json();
+    const models = Array.isArray(data?.models) ? data.models : [];
+    const names = models.map((m) => m?.name || m?.model).filter(Boolean);
+    this.modelId = names.length ? names.join(", ") : null;
+    this.modelPath = null;
+    const ctx = Number(models[0]?.context_length);
+    this.contextLength = Number.isFinite(ctx) && ctx > 0 ? ctx : null;
+    this.slotsActive = models.length;
+    this.slotsTotal = models.length;
+    this.generationTps = 0;
+    this.prefillTps = 0;
+    this.cachedPrefillTps = null;
+    this.uncachedPrefillTps = null;
+    const snap = this._getSnapshot();
+    snap.available = names.length > 0;
+    return snap;
   }
 
   /**
@@ -853,8 +914,17 @@ export class LlmProbe {
       const ttftSum = this._getVllmMetric(txt, "time_to_first_token_seconds_sum");
       const deltaIter =
         iterSum != null && this.lastIterSum != null ? iterSum - this.lastIterSum : 0;
-      if (dtSec > 0 && dtSec < 10) {
-        this.generationTps = Math.max(0, Math.round((deltaOut / dtSec) * 100) / 100);
+      // vLLM flushes these counters on a stats interval (often ~10s), not per
+      // token. Divide by the time since the counters last moved so a flush is
+      // the real rate, and keep that rate on screen while a request is still
+      // running. A poll gap under 10s used to drop the flush entirely.
+      const sinceSec =
+        this._vllmCountAt != null ? (Date.now() - this._vllmCountAt) / 1000 : 0;
+      const windowSec = sinceSec >= 0.5 && sinceSec < 180 ? sinceSec : dtSec;
+      const busy = running != null && running > 0;
+      if (windowSec > 0 && windowSec < 180) {
+        const gen = Math.max(0, Math.round((deltaOut / windowSec) * 100) / 100);
+        if (deltaOut > 0 || !busy) this.generationTps = gen;
         const deltaTtft =
           ttftSum != null && this.lastTtftSum != null ? ttftSum - this.lastTtftSum : 0;
         // Engine-step tokens include prefill+decode. Surplus over generation is
@@ -863,17 +933,21 @@ export class LlmProbe {
         const prefillIter = Math.max(0, deltaIter - Math.max(0, deltaOut));
         const specNoise = deltaOut > 0 && prefillIter > 0 && prefillIter < deltaOut * 0.5;
         const livePrefill =
-          prefillIter > 0 && !specNoise ? prefillIter / dtSec : 0;
+          prefillIter > 0 && !specNoise ? prefillIter / windowSec : 0;
         const finishedPrefill =
           deltaIn > 0 && deltaTtft > 0
             ? deltaIn / deltaTtft
             : deltaIn > 0 && livePrefill <= 0
-              ? deltaIn / dtSec
+              ? deltaIn / windowSec
               : 0;
-        this.prefillTps = Math.max(
+        const pre = Math.max(
           0,
           Math.round((livePrefill > 0 ? livePrefill : finishedPrefill) * 100) / 100
         );
+        if (pre > 0 || !busy) this.prefillTps = pre;
+        if (deltaOut !== 0 || deltaIn !== 0 || deltaIter !== 0) {
+          this._vllmCountAt = Date.now();
+        }
       }
       // Live mean TTFT over the last poll window from histogram sum/count deltas.
       // Computed BEFORE lastTtftSum is advanced so the delta is real, not 0.

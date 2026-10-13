@@ -1,3 +1,4 @@
+import type { PluginInfo } from "../plugins/types";
 import type {
   DecodeBenchJob,
   DecodeBenchListResponse,
@@ -441,4 +442,307 @@ export function updateSettings(patch: Partial<Settings>): Promise<Settings> {
     method: "PUT",
     body: JSON.stringify(patch),
   });
+}
+
+// ─── Model management (sparkdeck control plane) ──────────
+export interface VllmProc {
+  port: number;
+  servedName: string;
+  modelPath: string;
+  maxModelLen: number;
+  gpuMemUtil: number;
+}
+
+export interface ModelDir {
+  name: string;
+  complete: boolean;
+  shards: number;
+  arch: string;
+}
+
+export interface SparkrunRecipe {
+  name: string;
+  model?: string;
+  runtime?: string;
+  localPath?: string;
+  min_nodes?: number;
+  matchScore?: number;
+  source?: "sparkrun" | "custom" | "mia" | "git" | "yaml" | string;
+  url?: string;
+  stars?: number;
+}
+
+export interface InventoryResponse {
+  modelDirs: ModelDir[];
+  ggufFiles: string[];
+  ollamaTags: string[];
+  vllmProcs: VllmProc[];
+  sparkrunMatchesByDir?: Record<string, SparkrunRecipe[]>;
+  sparkrunMatchesByTag?: Record<string, SparkrunRecipe[]>;
+}
+
+export interface ControlStatusResponse {
+  pending: Record<string, { msg: string; pct: number | null }>;
+  activity: Array<{ ts: string; msg: string }>;
+}
+
+export function fetchInventory(id: string): Promise<InventoryResponse> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/inventory`);
+}
+
+export function fetchControlStatus(): Promise<ControlStatusResponse> {
+  return apiFetch("/api/control/status");
+}
+
+export function switchModel(
+  id: string,
+  body: { modelDir: string; port: number; arch?: string }
+): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/control/switch`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function killPort(id: string, port: number): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/control/kill`, {
+    method: "POST",
+    body: JSON.stringify({ port }),
+  });
+}
+
+export function warmModel(id: string, model: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/control/warm`, {
+    method: "POST",
+    body: JSON.stringify({ model }),
+  });
+}
+
+export function restartVllm(id: string, port: number): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/control/restart-vllm`, {
+    method: "POST",
+    body: JSON.stringify({ port }),
+  });
+}
+
+export function restartOllama(id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/control/restart-ollama`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export function pullModel(id: string, modelTag: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/control/pull`, {
+    method: "POST",
+    body: JSON.stringify({ modelTag }),
+  });
+}
+
+export function importGguf(
+  id: string,
+  ggufPath: string,
+  modelName: string
+): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/control/gguf-import`, {
+    method: "POST",
+    body: JSON.stringify({ ggufPath, modelName }),
+  });
+}
+
+export function sparkrunRun(
+  id: string,
+  params: { recipeName: string; port?: number; servedName?: string; gpuMem?: number; maxModelLen?: number }
+): Promise<{ ok: boolean; logPath?: string }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/control/sparkrun-run`, {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export function copyModel(
+  id: string,
+  params: { dst: string; kind: string; name: string }
+): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/control/copy`, {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export function fetchSparkrunRecipes(): Promise<{ recipes: SparkrunRecipe[] }> {
+  return apiFetch("/api/sparkrun/recipes");
+}
+
+export function fetchRecipes(): Promise<{ recipes: SparkrunRecipe[]; miaError?: string | null }> {
+  return apiFetch("/api/recipes");
+}
+
+export function importRecipe(url: string): Promise<{ ok: boolean; recipe: SparkrunRecipe }> {
+  return apiFetch("/api/recipes/import", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
+}
+
+export function loadRecipe(
+  id: string,
+  recipe: { source?: string; name?: string; url?: string; localPath?: string; port?: number }
+): Promise<{ ok: boolean; logPath?: string; url?: string }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/recipes/load`, {
+    method: "POST",
+    body: JSON.stringify(recipe),
+  });
+}
+
+export function unloadRecipe(
+  id: string,
+  recipe: { source?: string; name?: string; url?: string; localPath?: string; port?: number; model?: string }
+): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/recipes/unload`, {
+    method: "POST",
+    body: JSON.stringify(recipe),
+  });
+}
+
+export function fetchRecipeLog(
+  id: string,
+  recipe: { source?: string; name?: string; url?: string }
+): Promise<{ log: string }> {
+  const q = new URLSearchParams();
+  if (recipe.source) q.set("source", recipe.source);
+  if (recipe.name) q.set("recipe", recipe.name);
+  if (recipe.url) q.set("url", recipe.url);
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/recipes/log?${q.toString()}`);
+}
+
+export function ollamaStop(id: string, model: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/control/ollama-stop`, {
+    method: "POST",
+    body: JSON.stringify({ model }),
+  });
+}
+
+export function sparkrunLaunch(
+  id: string,
+  opts: { recipeName: string; port?: number; servedName?: string; gpuMem?: number; maxModelLen?: number }
+): Promise<{ ok: boolean; logPath?: string }> {
+  return sparkrunRun(id, opts);
+}
+
+export function fetchSparkrunLog(id: string, recipe: string): Promise<{ log: string }> {
+  return apiFetch(
+    `/api/sparks/${encodeURIComponent(id)}/control/sparkrun-log?recipe=${encodeURIComponent(recipe)}`
+  );
+}
+
+export function addSparkrunRecipe(input: {
+  name: string;
+  model: string;
+  runtime?: string;
+  image?: string;
+  command?: string;
+}): Promise<{ ok: boolean; name: string; localPath?: string }> {
+  return apiFetch("/api/sparkrun/recipes", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export type ServingConfigMtp = 0 | 1 | 3;
+
+export interface ServingConfig {
+  model: string | null;
+  mtp: ServingConfigMtp;
+  fp8Kv: boolean;
+  noThink: boolean;
+  prefixCaching: boolean;
+  chunkedPrefill: boolean;
+}
+
+export interface TranslatedServingConfig {
+  modelPath: string | null;
+  mtp: number;
+  fp8Kv: boolean;
+  noThink: boolean;
+  prefixCaching: boolean;
+  chunkedPrefill: boolean;
+  argv: string[];
+  shell: string;
+  mtpJson: string | null;
+  chatTemplateKwargs: Record<string, unknown> | null;
+}
+
+export interface ServingConfigResponse {
+  config: ServingConfig;
+  translated: TranslatedServingConfig;
+}
+
+export interface SaveServingConfigResponse extends ServingConfigResponse {
+  applied: boolean;
+  note: string;
+}
+
+export interface AbBenchStubResponse {
+  ok: boolean;
+  stubbed: boolean;
+  sparkId: string;
+  message: string;
+  config: ServingConfig;
+}
+
+export function fetchServingConfig(id: string): Promise<ServingConfigResponse> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/serving-config`);
+}
+
+export function saveServingConfig(
+  id: string,
+  config: Partial<ServingConfig>
+): Promise<SaveServingConfigResponse> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/serving-config`, {
+    method: "PUT",
+    body: JSON.stringify(config),
+  });
+}
+
+export function runAbBenchmark(id: string): Promise<AbBenchStubResponse> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/serving-config/ab-bench`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export interface AdminStatus {
+  admin: boolean;
+  configured: boolean;
+  protected: string[];
+}
+
+export function fetchAdminStatus(): Promise<AdminStatus> {
+  return apiFetch("/api/admin/status");
+}
+
+export function adminLogin(password: string): Promise<{ success: boolean; admin: boolean }> {
+  return apiFetch("/api/admin/login", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function adminLogout(): Promise<{ success: boolean; admin: boolean }> {
+  return apiFetch("/api/admin/logout", { method: "POST" });
+}
+
+export function fetchPlugins(): Promise<{ plugins: PluginInfo[] }> {
+  return apiFetch("/api/plugins");
+}
+
+export interface FleetCoverage {
+  sparks: { id: string; name: string }[];
+  reachable: string[];
+  models: { kind: string; name: string; present: string[]; missing: string[] }[];
+}
+
+export function fetchFleetCoverage(): Promise<FleetCoverage> {
+  return apiFetch("/api/fleet/coverage");
 }

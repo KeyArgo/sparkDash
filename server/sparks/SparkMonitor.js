@@ -10,6 +10,17 @@ import { HermesProbe } from "../collectors/HermesProbe.js";
 import { TailscaleProbe } from "../collectors/TailscaleProbe.js";
 import { llmDaily } from "../collectors/LlmDaily.js";
 import { sshExec } from "../collectors/ssh.js";
+import { llmProbeHost } from "../collectors/llmHost.js";
+import {
+  candidatePorts,
+  collectRecipePorts,
+  mergeLoadedView,
+  parseListeningPorts,
+  parseServeOutput,
+  portsFromProcessText,
+  portServesModel,
+  splitDiscoverOutput,
+} from "./serveDiscovery.js";
 import {
   POLL_INTERVAL_GPU,
   POLL_INTERVAL_CPU,
@@ -51,6 +62,9 @@ export class SparkMonitor {
 
     // One LlmProbe per port — none when LLM monitoring is off
     this.llmProbes = new Map();
+    this._resident = null;
+    this._lastDiscover = 0;
+    this._discovering = false;
     if (this._llmMonitoringEnabled(spark)) {
       for (const port of this._llmPorts()) {
         this.llmProbes.set(port, new LlmProbe(spark, port));
@@ -381,6 +395,52 @@ export class SparkMonitor {
     }
   }
 
+  /** Look for a serve process or a well-known port the config list does not have. */
+  async _discoverLoadedModel() {
+    if (!this._running || this._discovering || !this._llmMonitoringEnabled()) return;
+    const now = Date.now();
+    if (now - this._lastDiscover < 20_000) return;
+    this._discovering = true;
+    this._lastDiscover = now;
+    try {
+      let ps = "";
+      let listening = [];
+      try {
+        const text = await sshExec(
+          this.spark,
+          "ps -eo args= | grep -e 'vllm serve' -e sglang -e launch_server -e llama-server -e serve_openai -e exllama | grep -v grep | head -n 8; echo '---SS---'; ss -lnt",
+          { timeoutMs: 8000 }
+        );
+        const parts = splitDiscoverOutput(text);
+        ps = parts.ps;
+        listening = parseListeningPorts(parts.ss);
+        const found = parseServeOutput(ps);
+        this._resident = found.worker;
+        if (found.serving && !this.llmProbes.has(found.serving.port)) {
+          this.llmProbes.set(found.serving.port, new LlmProbe(this.spark, found.serving.port));
+        }
+      } catch {
+        /* SSH miss: keep the last worker row, still try recipe ports */
+      }
+      const host = llmProbeHost(this.spark);
+      const ports = candidatePorts({
+        listening,
+        processPorts: portsFromProcessText(ps),
+        recipePorts: collectRecipePorts(),
+      });
+      for (const port of ports) {
+        if (this.llmProbes.has(port)) continue;
+        if (await portServesModel(host, port)) {
+          this.llmProbes.set(port, new LlmProbe(this.spark, port));
+        }
+      }
+    } catch (err) {
+      console.error(`[SparkMonitor] ${this.spark.id} model discover:`, err.message);
+    } finally {
+      this._discovering = false;
+    }
+  }
+
   /** Returns array of LLM ports from spark config. */
   _llmPorts() {
     const raw = this.spark?.llmPorts;
@@ -442,9 +502,21 @@ export class SparkMonitor {
     console.log(`[SparkMonitor] ${this.spark.id} stopped`);
   }
 
+  /** Ports probed, plus a loaded row when the GPU holds a model the ports missed. */
+  _visibleLlm(ports, llm) {
+    return mergeLoadedView({
+      ports,
+      llm,
+      resident: this._resident,
+      processes: this._metrics.gpu?.processes,
+    });
+  }
+
   /** Return a full snapshot of this Spark's metrics. */
   snapshot() {
-    const ports = this._llmMonitoringEnabled() ? this._llmPorts() : [];
+    const configured = this._llmMonitoringEnabled() ? Array.from(this.llmProbes.keys()) : [];
+    const visible = this._visibleLlm(configured, this._metrics.llm);
+    const ports = visible.ports.length ? visible.ports : this._llmMonitoringEnabled() ? this._llmPorts() : [];
     const comfyOn = this._comfyMonitoringEnabled();
     const tailscaleOn = this._tailscaleMonitoringEnabled();
     return {
@@ -492,7 +564,7 @@ export class SparkMonitor {
         storage: this._metrics.storage,
         network: this._metrics.network,
         unifiedMemory: this._metrics.unifiedMemory,
-        llm: this._metrics.llm,
+        llm: visible.llm,
         comfy: comfyOn ? this._metrics.comfy : null,
         tailscale: tailscaleOn ? this._metrics.tailscale : null,
       },
@@ -613,7 +685,7 @@ export class SparkMonitor {
           result = await this.collector.collectUnifiedMemory();
           break;
         case "llm":
-          // Probe all ports in parallel
+          void this._discoverLoadedModel();
           result = await Promise.all(
             Array.from(this.llmProbes.values()).map((probe) => probe.probe())
           );
