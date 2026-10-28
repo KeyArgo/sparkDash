@@ -26,6 +26,7 @@ import { engineStateLabel } from "./llmEngineState";
 import { idleLabel, isLlmIdle } from "../../shared/llmIdle";
 import { measuredGenerationTps } from "../../shared/llmRate";
 import { ConversationList } from "./ConversationList";
+import { LLM_METRIC_HELP } from "../../shared/llmHelp";
 
 interface LlmPanelProps {
   llm: LlmMetrics | null;
@@ -63,6 +64,19 @@ const VLLM_METRIC_INFO = {
   mtpAccept:
     "Lifetime speculative / MTP acceptance rate (accepted draft tokens ÷ drafted tokens). Higher means speculative decoding is paying off; — when speculation is off or unused.",
 } as const;
+
+/**
+ * Plain-language one-liners (the overview card's wording) surfaced on the tile
+ * label's title attribute — the (i) tip above keeps the more detailed engine
+ * wording for those who want it.
+ */
+const TILE_PLAIN_HINT: Partial<Record<keyof typeof VLLM_METRIC_INFO, string>> = {
+  kvCache: LLM_METRIC_HELP.kv,
+  requests: LLM_METRIC_HELP.runningWaiting,
+  ttftMean: LLM_METRIC_HELP.ttft,
+  ttftP95: LLM_METRIC_HELP.ttft,
+  prefixCache: LLM_METRIC_HELP.cached,
+};
 
 /** Compact token counts for the KV pool tile (883552 → 884k). */
 function formatKvTokens(n: number): string {
@@ -299,6 +313,7 @@ function MetricInfoTip({
   id,
   label,
   text,
+  plainTitle,
   openId,
   setOpenId,
   /** Anchor tooltip to the right so edge columns don’t clip off-screen */
@@ -307,6 +322,8 @@ function MetricInfoTip({
   id: string;
   label: string;
   text: string;
+  /** Plain-language hover text on the label itself (the tip holds the detailed wording). */
+  plainTitle?: string;
   openId: string | null;
   setOpenId: (id: string | null) => void;
   align?: "left" | "right";
@@ -330,7 +347,7 @@ function MetricInfoTip({
 
   return (
     <div className="sp-tile__label">
-      <span>{label}</span>
+      <span title={plainTitle}>{label}</span>
       <button
         type="button"
         onClick={() => {
@@ -534,6 +551,7 @@ export function LlmPanel({
         id={id}
         label={label}
         text={VLLM_METRIC_INFO[id as keyof typeof VLLM_METRIC_INFO]}
+        plainTitle={TILE_PLAIN_HINT[id as keyof typeof VLLM_METRIC_INFO]}
         openId={metricInfoId}
         setOpenId={setMetricInfoId}
         align={opts?.align}
@@ -743,11 +761,11 @@ export function LlmPanel({
             </p>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-xs text-muted">Generation tok/s</span>
+            <span className="text-xs text-muted" title={LLM_METRIC_HELP.tokPerS}>Generation tok/s</span>
             <span className="font-tabular text-sm font-semibold text-accent">0.0</span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-xs text-muted">Prefill tok/s</span>
+            <span className="text-xs text-muted" title={LLM_METRIC_HELP.prefill}>Prefill tok/s</span>
             <span className="font-tabular text-sm font-semibold text-text">0.0</span>
           </div>
           <LlmLaunchers
@@ -788,7 +806,7 @@ export function LlmPanel({
                   : undefined
               }
             >
-              <span className="eyebrow">Decode</span>
+              <span className="eyebrow" title={LLM_METRIC_HELP.tokPerS}>Decode</span>
               <div className="big-num sp-big-lg">
                 {!measured ? (
                   <span title={llm?.measurementError ?? undefined}>—</span>
@@ -834,7 +852,7 @@ export function LlmPanel({
                   : "Prompt tokens/sec taken in during the last poll window — cache-served + computed. Opening a saved chat in the UI does not hit the GPU; send (or regenerate) so the history is sent as the prompt. Cached prefill does little GPU work; uncached prefill is what builds KV cache."
               }
             >
-              <span className="eyebrow">Prefill</span>
+              <span className="eyebrow" title={LLM_METRIC_HELP.prefill}>Prefill</span>
               <div className="big-num sp-big-lg">
                 {!measured ? (
                   <span title={llm?.measurementError ?? undefined}>—</span>
@@ -869,7 +887,7 @@ export function LlmPanel({
                 className="sp-metric"
                 title="Prefill tokens served from prefix cache (little GPU work). High values mean prompt reuse, not a faster cold prefill."
               >
-                <span className="eyebrow">Cached prefill</span>
+                <span className="eyebrow" title={LLM_METRIC_HELP.cached}>Cached prefill</span>
                 <div className="big-num sp-big-md">
                   {fmtTps(cachedPrefillTps)}
                   <small>tok/s</small>

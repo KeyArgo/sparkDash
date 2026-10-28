@@ -14,6 +14,8 @@ import { HEADROOM_THRESHOLDS_MB, computeVramBreakdown, memoryModelFor, type Vram
 import { ImageIcon, PowerOnIcon } from "../ui/icons";
 import { formatCtx } from "./fleetStats";
 import { ModelLauncher } from "./ModelLauncher";
+import { LlmHelpPopover } from "../ui/LlmHelpPopover";
+import { LLM_METRIC_HELP } from "../../shared/llmHelp";
 
 type Unit = "celsius" | "fahrenheit";
 
@@ -40,26 +42,37 @@ function fmtSeconds(s: number | null | undefined): string | null {
  * just the `LLM` prefix.
  */
 export function llmTelemetryText(llm: SparkLlmTelemetry | null | undefined): string | null {
+  return llmTelemetrySegments(llm)?.map((seg) => seg.text).join(" · ") ?? null;
+}
+
+export interface LlmTelemetrySegment {
+  text: string;
+  /** Plain-language explanation shown on hover — null (or undefined) leaves the raw line tooltip. */
+  title?: string;
+}
+
+/** Same line as `llmTelemetryText`, segmented so each metric can carry its own tooltip. */
+export function llmTelemetrySegments(llm: SparkLlmTelemetry | null | undefined): LlmTelemetrySegment[] | null {
   if (!llm?.serving) return null;
-  const parts: string[] = ["LLM"];
-  if (llm.model) parts[0] = `LLM ${llm.model}`;
+  const modelLabel = llm.model ? `LLM ${llm.model}` : "LLM";
+  const segments: LlmTelemetrySegment[] = [{ text: modelLabel }];
   const rate = llm.tok_per_s != null && Number.isFinite(llm.tok_per_s) ? `${llm.tok_per_s.toFixed(1)} tok/s` : null;
   const prefill = fmtSeconds(llm.prefill_s);
   const ttft = fmtSeconds(llm.ttft_s);
   const kv = llm.kv_pct != null && Number.isFinite(llm.kv_pct) ? `kv ${Math.round(llm.kv_pct)}%` : null;
-  if (rate) parts.push(rate);
-  if (prefill) parts.push(`prefill ${prefill}`);
-  if (ttft) parts.push(`ttft ${ttft}`);
-  if (kv) parts.push(kv);
+  if (rate) segments.push({ text: rate, title: LLM_METRIC_HELP.tokPerS });
+  if (prefill) segments.push({ text: `prefill ${prefill}`, title: LLM_METRIC_HELP.prefill });
+  if (ttft) segments.push({ text: `ttft ${ttft}`, title: LLM_METRIC_HELP.ttft });
+  if (kv) segments.push({ text: kv, title: LLM_METRIC_HELP.kv });
   const clients = (llm.clients ?? [])
     .map((c) => c?.label ?? c?.ip)
     .filter((x): x is string => Boolean(x));
-  if (clients.length) parts.push(`clients: ${clients.join(", ")}`);
+  if (clients.length) segments.push({ text: `clients: ${clients.join(", ")}` });
   const guests = Object.entries(llm.guests ?? {});
   if (guests.length) {
-    parts.push(`guests: ${guests.map(([alias, n]) => (n > 1 ? `${alias} x${n}` : alias)).join(", ")}`);
+    segments.push({ text: `guests: ${guests.map(([alias, n]) => (n > 1 ? `${alias} x${n}` : alias)).join(", ")}` });
   }
-  return parts.join(" · ");
+  return segments;
 }
 
 function Bar({
@@ -115,6 +128,7 @@ function SparkCardImpl({
 }) {
   const gpu = spark.metrics.gpu;
   const llmLine = llmTelemetryText(spark.llm);
+  const llmSegments = llmTelemetrySegments(spark.llm);
   const um = spark.metrics.unifiedMemory;
   const online = spark.online;
   const role = resolveSparkRole(spark);
@@ -247,7 +261,11 @@ function SparkCardImpl({
         : null
     : null;
   const llmChipTitle =
-    parallel != null && llm?.requestsRunning != null ? `${parallel} requests decode in parallel on this engine` : undefined;
+    parallel != null && llm?.requestsRunning != null
+      ? `${parallel} requests decode in parallel on this engine · ${LLM_METRIC_HELP.runningWaiting}`
+      : llm?.requestsRunning != null
+        ? LLM_METRIC_HELP.runningWaiting
+        : undefined;
 
   const chips = (
     <div className="ov-chips">
@@ -371,9 +389,15 @@ function SparkCardImpl({
               {cpuPower ? <Bar label="CPU power" caption={`${cpuPower.draw} / ${cpuPower.tdp} W`} pct={cpuPowerPct} color="var(--color-violet)" /> : null}
             </div>
           </div>
-          {llmLine ? (
-            <div className="ov-sc__llm" title={llmLine}>
-              {llmLine}
+          {llmSegments ? (
+            <div className="ov-sc__llm" title={llmLine ?? undefined}>
+              {llmSegments.map((seg) => (
+                <span key={seg.text} title={seg.title}>
+                  {seg.text}
+                  {seg !== llmSegments[llmSegments.length - 1] ? " · " : ""}
+                </span>
+              ))}
+              <LlmHelpPopover />
             </div>
           ) : null}
           {showLauncher ? <ModelLauncher spark={spark} onOpen={onSelect} busy={loadingHint} busyHolders={gpuHolders.length > 0} freeMb={memTotal > 0 ? memAvail : null} lowFreeMb={HEADROOM_THRESHOLDS_MB[memoryModelFor(spark.kind)].low} /> : null}

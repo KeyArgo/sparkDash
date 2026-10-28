@@ -55,7 +55,7 @@ describe("SparkCard", () => {
       const { container } = render(<SparkCard spark={spark} temperatureUnit="celsius" />);
       const chip = container.querySelector(".ov-chips")!;
       expect(chip.textContent).toContain(`1 running · 0 queued · ${total} slots`);
-      expect(chip.querySelector(`[title="${total} requests decode in parallel on this engine"]`)).not.toBeNull();
+      expect(chip.querySelector(`[title="${total} requests decode in parallel on this engine · Requests being served / requests in queue. Waiting > 0 means someone is queued."]`)).not.toBeNull();
     }
   });
 
@@ -172,5 +172,61 @@ describe("SparkCard effective prefill rate", () => {
     Object.assign(spark.metrics.llm[0], { prefillTps: 0, perStreamPrefillTps: null });
     const { container } = render(<SparkCard spark={spark} temperatureUnit="celsius" />);
     expect(container.textContent).not.toContain("effective (incl. cached tokens)");
+  });
+});
+
+describe("SparkCard muted LLM telemetry line", () => {
+  function telemetrySpark(): SparkSnapshot {
+    const spark = makeSpark("t") as SparkSnapshot & { llm?: unknown };
+    spark.id = "t";
+    spark.name = "Spark t";
+    spark.llm = {
+      serving: true,
+      model: "qwen-35b",
+      tok_per_s: 48.5,
+      decode_tps: 48.5,
+      prefill_s: 1.25,
+      ttft_s: 0.8,
+      kv_pct: 62.4,
+      running: 2,
+      waiting: 1,
+      clients: [],
+      guests: {},
+    };
+    return spark as unknown as SparkSnapshot;
+  }
+
+  it("gives each metric on the muted line a plain-language hover tooltip", () => {
+    const { container } = render(<SparkCard spark={telemetrySpark()} temperatureUnit="celsius" />);
+    const line = container.querySelector(".ov-sc__llm")!;
+    expect(line.textContent).toContain("48.5 tok/s");
+    const spanTitle = (text: string) =>
+      [...line.querySelectorAll("span")].find((s) => s.textContent?.includes(text))?.getAttribute("title") ?? null;
+    expect(spanTitle("48.5 tok/s")).toBe("Generation speed — tokens written per second while answering.");
+    expect(spanTitle("prefill 1.3s")).toBe("Seconds spent reading the prompt before the first word. Long = huge context or a cold cache.");
+    expect(spanTitle("ttft 800ms")).toBe("Time to first token — total wait before the answer starts (queue + prefill).");
+    expect(spanTitle("kv 62%")).toBe("How full the context memory is. Near 100% = oldest conversations get evicted.");
+  });
+
+  it("splits the muted line into segments with the same ' · ' joins", () => {
+    const { container } = render(<SparkCard spark={telemetrySpark()} temperatureUnit="celsius" />);
+    const line = container.querySelector(".ov-sc__llm")!;
+    expect(line.textContent).toContain("LLM qwen-35b · 48.5 tok/s · prefill 1.3s · ttft 800ms · kv 62%");
+  });
+
+  it("opens the 'What these mean' popover from the line's ? icon", () => {
+    const { container } = render(<SparkCard spark={telemetrySpark()} temperatureUnit="celsius" />);
+    const trigger = container.querySelector<HTMLElement>('[aria-label="What these mean"]')!;
+    expect(trigger).not.toBeNull();
+    expect(container.textContent).not.toContain("running / waiting");
+    act(() => trigger.click());
+    expect(container.textContent).toContain("What these mean");
+    expect(container.textContent).toContain("Requests being served / requests in queue. Waiting > 0 means someone is queued.");
+    expect(container.textContent).toContain("Green numbers are good; prefill and ttft are waits, tok/s is speed.");
+  });
+
+  it("shows no ? icon when there is no LLM telemetry", () => {
+    const { container } = render(<SparkCard spark={makeSpark("t")} temperatureUnit="celsius" />);
+    expect(container.querySelector('[aria-label="What these mean"]')).toBeNull();
   });
 });
