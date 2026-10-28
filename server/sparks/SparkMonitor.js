@@ -10,6 +10,7 @@ import { HermesProbe } from "../collectors/HermesProbe.js";
 import { TailscaleProbe } from "../collectors/TailscaleProbe.js";
 import { llmDaily } from "../collectors/LlmDaily.js";
 import { HealthEvaluator } from "../health/HealthEvaluator.js";
+import { getSettings } from "../settings.js";
 import { sshExec } from "../collectors/ssh.js";
 import { llmProbeHost } from "../collectors/llmHost.js";
 import {
@@ -22,6 +23,10 @@ import {
   portServesModel,
   splitDiscoverOutput,
 } from "./serveDiscovery.js";
+
+/** macOS uptime in seconds from `kern.boottime` (`{ sec = 1791857261, usec = ... } ...`). */
+export const DARWIN_UPTIME_CMD =
+  "b=$(sysctl -n kern.boottime | sed -E 's/^[{] sec = ([0-9]+),.*/\\1/'); echo $(( $(date +%s) - b ))";
 import {
   POLL_INTERVAL_STORAGE,
   POLL_INTERVAL_LIVENESS,
@@ -138,7 +143,12 @@ export class SparkMonitor {
     /** @type {boolean | null} null until the first successful GPU sample. */
     this._prevThermal = null;
     /** Health rules + their sample-streak state; findings go out in snapshot().health. */
-    this._healthEval = new HealthEvaluator();
+    this._healthEval = new HealthEvaluator({
+      thresholds: () => {
+        const { healthTempWarnC, healthTempCriticalC } = getSettings();
+        return { warnC: healthTempWarnC, criticalC: healthTempCriticalC };
+      },
+    });
     this._health = [];
     this._prevHealthIds = null;
     // Resolver for worker derived label: maps a head spark id to its live
@@ -587,7 +597,8 @@ export class SparkMonitor {
       ports.add(port);
       const gen = Number(entry.generationTps);
       const pre = Number(entry.prefillTps);
-      if ((Number.isFinite(gen) && gen > 0) || (Number.isFinite(pre) && pre > 0)) {
+      if (entry.available && (entry.decodeActive === true || entry.prefillActive === true ||
+        (Number.isFinite(gen) && gen > 0) || (Number.isFinite(pre) && pre > 0))) {
         this._llmLastActiveAt.set(port, now);
       }
       return { ...entry, lastActiveAt: this._llmLastActiveAt.get(port) ?? null };
@@ -790,13 +801,9 @@ export class SparkMonitor {
       health: this._health,
       hardware: this._hardwareSummary,
       metrics: {
-        // NOTE: no `timestamp` here on purpose. The broadcast path skips
-        // snapshots whose JSON is byte-identical to the previous one (see
-        // startBroadcast); a per-snapshot Date.now() would defeat that cache,
-        // forcing a broadcast + frontend re-render every tick even when all
-        // measured values are unchanged. The frontend does not consume a
-        // metrics timestamp; the WS receive time can serve if one is ever
-        // needed.
+        // NOTE: no `timestamp` here. The frontend does not consume a metrics
+        // timestamp; the broadcast envelope's `generatedAt` (see
+        // buildSnapshotPayload) and the WS receive time already serve.
         gpu: this._metrics.gpu,
         cpu: this._metrics.cpu,
         ram: this._metrics.ram,
@@ -822,6 +829,9 @@ export class SparkMonitor {
     if (this.spark.isLocal) {
       const mapped = path.join(HOST_PATHS.PROC, "uptime");
       content = fs.readFileSync(mapped, "utf8");
+    } else if (this.spark.platform === "darwin") {
+      // macOS has no /proc/uptime; without this every Mac unit stays offline.
+      content = await sshExec(this.spark, DARWIN_UPTIME_CMD);
     } else {
       content = await sshExec(this.spark, "cat /proc/uptime");
     }
@@ -951,6 +961,28 @@ export class SparkMonitor {
     if (this.spark.storagePollDisabled) delete out.storage;
     if (!this._llmMonitoringEnabled()) delete out.llm;
     return out;
+  }
+
+  /** Epoch ms of the last poll of `domain` that returned real data, or null (never, or not polled). */
+  lastCollectedAt(domain) {
+    const at = this._lastSuccess[domain];
+    return Number.isFinite(at) ? at : null;
+  }
+
+  /**
+   * Whether the latest completed poll of `domain` returned real data. A failed GPU/CPU read is
+   * zero-filled and every other domain keeps its previous value, so "the poll ran" is not enough.
+   */
+  collectionOk(domain) {
+    if (domain === "gpu" || domain === "cpu") return this._metricCollectionSuccessful[domain] === true;
+    const at = this._lastSuccess[domain];
+    return Number.isFinite(at) && at === this._lastUpdate[domain];
+  }
+
+  /** Current cadence (ms) of a collector that follows Settings → Poll interval, or null for other domains. */
+  pollIntervalMs(domain) {
+    const ms = this._fastIntervals[domain];
+    return Number.isFinite(ms) && ms > 0 ? ms : null;
   }
 
   _noteThrottle(gpu) {

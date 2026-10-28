@@ -1,5 +1,6 @@
 import type { DecodeBenchJob, PrefillBenchJob, QualityBenchJob } from "../../../api/types";
 import { formatContextSize } from "../../../shared/prefillBench.js";
+import { decodeBenchSamplingLabel } from "../../SparkPage/decodeSampling";
 
 /** One line of a bench page's run-history table. */
 export interface HistoryRow {
@@ -9,6 +10,8 @@ export interface HistoryRow {
   /** Run label (quality) or the bench's own shape, e.g. "×1, 2, 4". */
   label: string;
   model: string | null;
+  /** Endpoint port the run used, when the history spans several (quality). */
+  port?: number | null;
   /** The number to compare runs by, already formatted. */
   headline: string;
   /** Secondary facts for the same run. */
@@ -37,6 +40,8 @@ export function decodeHistoryRow(job: DecodeBenchJob): HistoryRow {
     detail: [
       best ? `peak at ×${best.concurrency}` : null,
       single ? `${single.meanDecodeTps.toFixed(1)}/stream at ×1` : null,
+      decodeBenchSamplingLabel(job.config),
+      job.config.contextTokens ? `${formatContextSize(job.config.contextTokens)} start ctx` : null,
     ]
       .filter(Boolean)
       .join(" · "),
@@ -71,6 +76,7 @@ export function qualityHistoryRow(job: QualityBenchJob): HistoryRow {
     status: job.status,
     label: job.config.label || "—",
     model: job.config.modelId ?? null,
+    port: Number.isInteger(job.config.port) ? job.config.port : null,
     headline: overall == null ? "—" : `${overall.toFixed(1)}%`,
     detail: cats ? `${cats} categor${cats === 1 ? "y" : "ies"}` : "",
   };

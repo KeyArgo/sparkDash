@@ -5,6 +5,7 @@ import { removeLauncher, runLauncher } from "../../api/client";
 import { fetchLaunchersCached, invalidateLaunchers, patchCachedStatus } from "../../hooks/launcherCache";
 import { useLauncherJob } from "../../hooks/useLauncherJob";
 import { useModalPresence } from "../../hooks/useModalPresence";
+import { useOverlayClose } from "../../hooks/useOverlayClose";
 import { LiveTerminal, terminalText } from "../ui/LiveTerminal";
 import { Panel } from "../ui/Panel";
 import { Tag, type TagTone } from "../ui/Tag";
@@ -87,6 +88,7 @@ function TerminalModal({
   onClose: () => void;
 }) {
   const { mounted, visible } = useModalPresence(open);
+  const overlayClose = useOverlayClose(onClose);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -99,9 +101,7 @@ function TerminalModal({
   return createPortal(
     <div
       className={`modal-overlay${visible ? " is-open" : ""}`}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...overlayClose}
     >
       <div className="modal-sheet term-modal" role="dialog" aria-modal="true" aria-label={title}>
         <div className="modal-sheet__header">

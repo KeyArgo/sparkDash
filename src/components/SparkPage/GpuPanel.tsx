@@ -9,6 +9,7 @@ import { MetricBar } from "../ui/MetricBar";
 import { VramBreakdownBar } from "../ui/VramBreakdownBar";
 import { useMetricsHistoryTail } from "../../hooks/metricsStore";
 import { formatMb } from "../../shared/formatBytes";
+import { shortGpuName } from "../../shared/gpuName";
 import { GpuHistoryChart, GPU_CHART_WINDOWS } from "./GpuHistoryChart";
 import {
   computeVramBreakdown,
@@ -37,12 +38,6 @@ interface GpuPanelProps {
 
 function celsiusToFahrenheit(c: number): number {
   return Math.round(c * 9 / 5 + 32);
-}
-
-/** "NVIDIA GeForce RTX 5080" → "RTX 5080" for the per-card rows. */
-function shortGpuName(name: string | null): string {
-  if (!name) return "";
-  return name.replace(/^NVIDIA\s+(GeForce\s+)?/i, "");
 }
 
 function throttleTag(reason: string | undefined): { label: string; tone: TagTone } {
@@ -122,7 +117,12 @@ function GpuDeviceRow({
           {d.metricAvailability?.powerDraw === false ? "—" : `${d.power.draw}W`} / {d.metricAvailability?.powerLimit === false ? "—" : `${d.power.limit}W`}
         </span>
       </div>
-      {breakdown ? (
+      {d.vramSource === "pci-bar" ? (
+        <div className="flex justify-between text-xs" title="VRAM use could not be read on this card">
+          <span className="text-muted">VRAM</span>
+          <span className="font-tabular text-text">{formatMb(d.vram.total)} total</span>
+        </div>
+      ) : breakdown ? (
         <VramBreakdownBar label="VRAM" breakdown={breakdown} showLegend />
       ) : d.metricAvailability?.vramUsed === false || d.metricAvailability?.vramTotal === false ? (
         <div className="flex justify-between text-xs"><span className="text-muted">VRAM</span><span className="font-tabular text-text">—</span></div>
@@ -244,6 +244,11 @@ export function GpuPanel({
             <small>{clock.unit}</small>
           </div>
           <Tag tone={throttle.tone}>{throttle.label}</Tag>
+          {t?.clockCapMHz != null ? (
+            <span className="sp-stat__sub mono" title="Locked with nvidia-smi -lgc">
+              cap {t.clockCapMHz} MHz
+            </span>
+          ) : null}
         </div>
       </div>
 

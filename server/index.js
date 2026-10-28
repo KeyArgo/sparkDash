@@ -8,7 +8,6 @@ import dotenv from "dotenv";
 import { SparkRegistry } from "./sparks/SparkRegistry.js";
 import { resolveFrontendDir, FRONTEND_MISSING_MESSAGE } from "./frontendDir.js";
 import { SparkMonitor } from "./sparks/SparkMonitor.js";
-import { collectionWasSuccessful } from "./collectors/SystemCollector.js";
 import { sshExec } from "./collectors/ssh.js";
 import { comfyCancelJob } from "./collectors/comfyActions.js";
 import {
@@ -17,13 +16,20 @@ import {
   createRateLimiter,
   assertAllowedTarget,
   validateDecodeBudget,
+  validateDecodeContextBudget,
   validatePrefillBudget,
 } from "./validate.js";
 import { authStatus, authorizeUpgrade, createAuthMiddleware, createHostGuardMiddleware, isLoopbackBind, setTailscaleName } from "./auth.js";
 import { inspectHealth } from "./health.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
+import { MqttPublisher } from "./mqtt/MqttPublisher.js";
+import { createOccupancyRuntime } from "./occupancy/runtime.js";
+import { formatContextSize, parseContextSize } from "../src/shared/prefillBench.js";
+import { PREFILL_RESERVE_TOKENS, sizeFitsContext } from "../src/shared/contextFit.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
 import { remoteShutdownCommand, spawnLocalShutdown } from "./shutdown.js";
+import { GpuClockManager } from "./gpuclock/GpuClockManager.js";
+import { registerGpuClockFleetRoute, registerGpuClockRoutes } from "./gpuclock/routes.js";
 import {
   decodeBenchManager,
   DECODE_BENCH_DEFAULTS,
@@ -52,10 +58,13 @@ import {
 } from "./llmtokens/LlmTokenRuntime.js";
 import { closeLlmStreamAgent } from "./collectors/LlmStreaming.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
-import { FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH } from "./config.js";
+import { createModelPricesHandler } from "./prices/ModelPrices.js";
+import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH, MAX_ACTIVE_BENCH_JOBS, METRICS_HISTORY_JSON_PATH } from "./config.js";
+import { createAlertsRuntime, registerAlertRoutes } from "./alerts/runtime.js";
 import { FleetEnergyTracker } from "./energy/FleetEnergyTracker.js";
 import { EventLog } from "./events/EventLog.js";
-import { GpuHistory, deviceReadings } from "./metrics/GpuHistory.js";
+import { UnitHistory } from "./metrics/UnitHistory.js";
+import { createUnitHistoryRuntime, registerUnitHistoryRoutes } from "./metrics/UnitHistoryRuntime.js";
 import { LauncherStore } from "./llmlaunch/LauncherStore.js";
 import { LauncherManager } from "./llmlaunch/LauncherManager.js";
 import { ToolEvalStore } from "./tooleval/ToolEvalStore.js";
@@ -260,7 +269,6 @@ const allowBench = createRateLimiter(20, 60_000);
 const allowGlobalDestructive = createRateLimiter(30, 60_000);
 /** Anti double-submit only; per-Spark mutex + MAX_ACTIVE_BENCH_JOBS cap load. */
 const benchCooldown = createRateLimiter(1, 3_000);
-const MAX_ACTIVE_BENCH_JOBS = 2;
 
 /** Running decode + prefill + quality jobs across all Sparks. */
 function activeBenchJobCount() {
@@ -277,7 +285,7 @@ function consumeBenchStartQuota(req, res) {
   // target resolution, so two concurrent requests could both have passed. This
   // runs synchronously right before the manager's start(), closing that window.
   if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
-    res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+    res.status(429).json({ error: `Global active benchmark cap (${MAX_ACTIVE_BENCH_JOBS}) reached; wait for a job to finish` });
     return false;
   }
   const key = principalKey(req);
@@ -303,6 +311,7 @@ function consumeBenchStartQuota(req, res) {
 // ─── Spark registry ──────────────────────────────────────
 const registry = new SparkRegistry();
 const inferenceActivity = new InferenceActivityStore();
+const occupancy = createOccupancyRuntime({ listSparks: () => registry.sparks });
 
 const fleetEnergyTracker = new FleetEnergyTracker({
   nodeIds: registry.sparkIds,
@@ -317,36 +326,25 @@ const eventLog = new EventLog({
   max: 2000,
 });
 
-// ─── GPU history (so a fresh page can draw the last hours at once) ─────
-const gpuHistory = new GpuHistory({
+// ─── MQTT bridge (opt-in, Settings → MQTT) ───────────────
+// Republishes the event stream and per-Spark availability to a broker the
+// user configures. Best-effort: a down broker drops messages rather than
+// ever blocking a poll loop (the client retries on its own in the meantime).
+const mqttPublisher = new MqttPublisher({ getSettings });
+eventLog.subscribe((event) => mqttPublisher.publishEvent(event));
+
+// ─── Unit history (so a fresh page can draw the last hours at once) ─────
+// GPU: a dense ~2 s series for 8 h (Overview/Spark charts) and a minute-resolution series for
+// a week (Temps day/week), always on, in one store fed by one sampler. The 48 h / 30 d bucketed
+// tiers only with Settings → metricsHistory on (read every tick, so no restart); the sampler is
+// started once the monitors exist, below.
+const metricsHistoryEnabled = () => getSettings().metricsHistory === true;
+const unitHistory = new UnitHistory({
   file: process.env.GPU_HISTORY_JSON_PATH || path.join(ROOT, "config", "gpu-history.json"),
+  longFile: process.env.GPU_HISTORY_LONG_JSON_PATH || path.join(ROOT, "config", "gpu-history-long.json"),
+  tiersFile: METRICS_HISTORY_JSON_PATH,
+  tiersEnabled: metricsHistoryEnabled,
 });
-const GPU_HISTORY_SAMPLE_MS = 2000;
-function sampleGpuHistory() {
-  try {
-    for (const snap of orderedSnapshots()) {
-      const gpu = snap?.metrics?.gpu;
-      // Require a real collection: a default/failed GPU result would record a fabricated 0 C / 0 %.
-      if (!snap?.online || !gpu || !collectionWasSuccessful(gpu)) continue;
-      const draw = gpu.power?.draw;
-      const limit = gpu.power?.limit;
-      const powerPct = Number.isFinite(draw) && Number.isFinite(limit) && limit > 0 ? Math.min(100, (draw / limit) * 100) : null;
-      gpuHistory.record(
-        snap.id,
-        Date.now(),
-        gpu.metricAvailability?.usage === false ? null : gpu.usage,
-        gpu.metricAvailability?.temperature === false ? null : gpu.temperature,
-        gpu.metricAvailability?.powerDraw === false || gpu.metricAvailability?.powerLimit === false ? null : powerPct,
-        deviceReadings(gpu.gpus)
-      );
-    }
-  } catch {
-    /* sampling must never break the server */
-  }
-}
-const gpuHistoryTimer = setInterval(sampleGpuHistory, GPU_HISTORY_SAMPLE_MS);
-gpuHistoryTimer.unref?.();
-gpuHistory.start();
 
 /** Record an event; never throws (callers sit in poll loops and routes). */
 function recordEvent(event) {
@@ -469,10 +467,14 @@ function startAllMonitors() {
 
 /** Snapshots in registry tab order (not Map insertion order). */
 function orderedSnapshots() {
+  const conversations = occupancy.projection().bySpark;
   return registry.sparkIds
     .map((id) => monitors.get(id))
     .filter(Boolean)
-    .map((m) => m.snapshot());
+    .map((m) => {
+      const snap = m.snapshot();
+      return { ...snap, conversations: conversations[snap.id] || {} };
+    });
 }
 
 const fleetEnergyRuntime = createFleetEnergyRuntime({
@@ -481,8 +483,25 @@ const fleetEnergyRuntime = createFleetEnergyRuntime({
   monitors,
 });
 
+const unitHistoryRuntime = createUnitHistoryRuntime({
+  store: unitHistory,
+  orderedSnapshots,
+  monitors,
+  isEnabled: metricsHistoryEnabled,
+});
+unitHistoryRuntime.start();
+
 // Cumulative prompt/generated token totals per model (per-UTC-day buckets for range queries).
 const llmTokenRuntime = createLlmTokenRuntime({ ledger: llmTokenLedger, orderedSnapshots });
+
+// Alert notifications over the Health findings and the Overview strip's exceptions.
+// Opt-in (settings.alertsEnabled): while off nothing is evaluated or sent, and
+// the config and test routes refuse. Every send is recorded in the Activity log.
+const alertsRuntime = createAlertsRuntime({
+  filePath: ALERTS_JSON_PATH,
+  isEnabled: () => getSettings().alertsEnabled === true,
+  recordEvent,
+});
 
 // ─── Express app ─────────────────────────────────────────
 const app = express();
@@ -495,6 +514,7 @@ app.get("/api/auth/status", createHostGuardMiddleware(), (req, res) => {
   res.json(authStatus(req));
 });
 app.use(createAuthMiddleware());
+occupancy.register(app);
 
 /** Fleet event log, newest first. Query: limit, sparkId, sinceId. */
 app.get("/api/events", (req, res) => {
@@ -610,6 +630,8 @@ app.use("/api/sparks", (req, res, next) => {
 // ─── REST API ────────────────────────────────────────────
 registerFleetEnergyRoute(app, fleetEnergyTracker);
 registerLlmTokenTotalsRoute(app, llmTokenLedger);
+app.get("/api/model-prices", createModelPricesHandler());
+registerAlertRoutes(app, alertsRuntime);
 
 // Never return SSH passwords in any response
 app.get("/api/sparks", (req, res) => {
@@ -761,8 +783,10 @@ app.delete("/api/sparks/:id", (req, res) => {
     stopMonitor(req.params.id);
     launcherManager.removeSpark(req.params.id);
     launcherStatusCache.delete(req.params.id);
-    gpuHistory.remove(req.params.id);
+    unitHistory.remove(req.params.id);
     toolEvalManager.removeSpark(req.params.id);
+    // Clear its retained status/metrics topics so MQTT subscribers stop seeing it.
+    mqttPublisher.removeUnit(req.params.id);
     recordEvent({
       type: "spark.removed",
       severity: "info",
@@ -807,6 +831,8 @@ app.put("/api/settings", (req, res) => {
       }
       restartBroadcast();
     }
+    // MQTT broker URL / prefix / enablement changed: reconnect (a no-op otherwise).
+    mqttPublisher.applySettings();
     res.json({ ...newSettings, inferenceActivityEnabled: inferenceActivity.enabled });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -819,11 +845,11 @@ app.get("/api/inference/activity", async (_req, res) => {
   res.set("Cache-Control", "no-store").json(inferenceActivity.snapshot());
 });
 
-// Recent GPU utilization / temperature / power % for one Spark (parallel arrays), newest last.
-app.get("/api/sparks/:id/gpu-history", (req, res) => {
-  if (!registry.getSpark(req.params.id)) return res.status(404).json({ error: "Spark not found" });
-  const windowMs = Math.min(8 * 3600_000, Math.max(60_000, Number(req.query.windowMs) || 8 * 3600_000));
-  res.json(gpuHistory.get(req.params.id, Date.now() - windowMs));
+// GET /api/sparks/:id/gpu-history (GPU raw tier, newest last) and /api/sparks/:id/history (bucketed tiers).
+registerUnitHistoryRoutes(app, {
+  store: unitHistory,
+  hasUnit: (id) => Boolean(registry.getSpark(id)),
+  isEnabled: metricsHistoryEnabled,
 });
 
 app.get("/api/sparks/:id/metrics", (req, res) => {
@@ -1419,7 +1445,7 @@ app.get("/api/sparks/:id/llm/daily", (req, res) => {
  */
 app.post("/api/sparks/:id/llm/bench", async (req, res) => {
   if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
-    return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+    return res.status(429).json({ error: `Global active benchmark cap (${MAX_ACTIVE_BENCH_JOBS}) reached; wait for a job to finish` });
   }
   const spark = registry.getSpark(req.params.id);
   if (!spark) return res.status(404).json({ error: "Spark not found" });
@@ -1459,7 +1485,8 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
 
   // Resolve model id for this port from live snapshot when possible
   let modelId = req.body?.modelId || null;
-  if (!modelId && !target.custom && monitor) {
+  let contextLength = null;
+  if (!target.custom && monitor) {
     const snap = monitor.snapshot();
     const llmList = Array.isArray(snap?.metrics?.llm) ? snap.metrics.llm : [];
     const portIndex = ports.indexOf(port);
@@ -1467,7 +1494,24 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
       (portIndex >= 0 ? llmList[portIndex] : null) ||
       llmList.find((m) => m?.available) ||
       llmList[0];
-    modelId = llm?.modelId || null;
+    if (!modelId) modelId = llm?.modelId || null;
+    contextLength = Number(llm?.contextLength) > 0 ? Number(llm.contextLength) : null;
+  }
+
+  // Deep-context start: every stream carries `contextTokens` of prompt before it decodes.
+  const contextTokens = parseContextSize(req.body?.contextTokens) || 0;
+  if (contextTokens > 0) {
+    try {
+      validateDecodeContextBudget(normalizeConcurrencies(req.body?.concurrencies), contextTokens);
+    } catch (err) {
+      return res.status(err.status || 429).json({ error: err.message });
+    }
+    const maxTokens = Number(req.body?.maxTokens ?? 400);
+    if (!sizeFitsContext(contextTokens, contextLength, PREFILL_RESERVE_TOKENS + maxTokens, 1)) {
+      return res.status(400).json({
+        error: `${formatContextSize(contextTokens)} of context plus ${maxTokens} reply tokens does not fit the model context (${contextLength.toLocaleString()} tokens)`,
+      });
+    }
   }
 
   try {
@@ -1481,6 +1525,9 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
       concurrencies: req.body?.concurrencies,
       maxTokens: req.body?.maxTokens,
       promptType: req.body?.promptType,
+      temperature: req.body?.temperature,
+      thinking: req.body?.thinking,
+      contextTokens: req.body?.contextTokens,
       debug: benchDebug,
       apiKey: target.apiKey,
       host: target.host,
@@ -1595,7 +1642,7 @@ app.delete("/api/sparks/:id/llm/bench/:benchId", (req, res) => {
  */
 app.post("/api/sparks/:id/llm/prefill-bench", async (req, res) => {
   if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
-    return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+    return res.status(429).json({ error: `Global active benchmark cap (${MAX_ACTIVE_BENCH_JOBS}) reached; wait for a job to finish` });
   }
   const spark = registry.getSpark(req.params.id);
   if (!spark) return res.status(404).json({ error: "Spark not found" });
@@ -1735,7 +1782,7 @@ app.delete("/api/sparks/:id/llm/prefill-bench/:benchId", (req, res) => {
  */
 app.post("/api/sparks/:id/llm/quality-bench", async (req, res) => {
   if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
-    return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+    return res.status(429).json({ error: `Global active benchmark cap (${MAX_ACTIVE_BENCH_JOBS}) reached; wait for a job to finish` });
   }
   const spark = registry.getSpark(req.params.id);
   if (!spark) return res.status(404).json({ error: "Spark not found" });
@@ -1817,10 +1864,21 @@ app.get("/api/sparks/:id/llm/quality-bench", (req, res) => {
       ? parseInt(String(portRaw), 10)
       : null;
   const p = Number.isInteger(port) ? port : null;
+  // `port` picks the endpoint of the current run view; `historyPort` (a port, or
+  // "all") widens or narrows the saved-run list on its own so runs from other
+  // endpoints stay reachable for comparison. Without it, history follows `port`.
+  const hpRaw = req.query.historyPort;
+  let historyPort = p;
+  if (hpRaw === "all") historyPort = null;
+  else if (hpRaw != null && hpRaw !== "") {
+    const hp = parseInt(String(hpRaw), 10);
+    if (!Number.isInteger(hp)) return res.status(400).json({ error: "historyPort must be a port number or \"all\"" });
+    historyPort = hp;
+  }
   res.json({
     active: qualityBenchManager.getActive(spark.id),
     last: qualityBenchManager.getLast(spark.id, p),
-    history: qualityBenchManager.getHistorySummaries(spark.id, p),
+    history: qualityBenchManager.getHistorySummaries(spark.id, historyPort),
     defaults: QUALITY_BENCH_DEFAULTS,
   });
 });
@@ -2186,6 +2244,31 @@ app.post("/api/sparks/:id/shutdown", async (req, res) => {
   }
 });
 
+// One manager for the fleet batch and the per-unit routes: it serialises work per
+// Spark, so a fleet apply cannot run while another cap change is in flight for it.
+const gpuClockManager = new GpuClockManager();
+
+// Fleet-wide batch first (a plain Sparks-suffix path, like shutdown-all).
+registerGpuClockFleetRoute(app, {
+  manager: gpuClockManager,
+  registry,
+  recordEvent,
+  allowChange: (req) => allowDestructive(principalKey(req)) && allowGlobalDestructive(clientKey(req)),
+  rejectLimited,
+});
+
+// GPU clock cap (nvidia-smi -lgc, optionally kept across reboots by a systemd service).
+// Needs root on the unit: the local unit runs as root in the host mount namespace, a
+// remote one uses `sudo -n` as its SSH user. Same auth and limiters as power actions.
+registerGpuClockRoutes(app, {
+  manager: gpuClockManager,
+  registry,
+  recordEvent,
+  allowRead: (req) => allowTest(principalKey(req)),
+  allowChange: (req) => allowDestructive(principalKey(req)) && allowGlobalDestructive(clientKey(req)),
+  rejectLimited,
+});
+
 app.post("/api/sparks/:id/wake", async (req, res) => {
   try {
     const spark = registry.getSpark(req.params.id);
@@ -2345,33 +2428,33 @@ function scheduleIdleCheck() {
 
 // ─── Broadcast snapshot (dynamic interval) ────────────────
 let broadcastTimer = null;
-let _lastBroadcastPayload = { admin: null, public: null };
-
-/** Build the snapshot payload string for an admin or public viewer. */
-function buildSnapshotPayload(admin, generatedAt = Date.now()) {
+/** Build the snapshot payload string for an admin or public viewer. Centralized so broadcast + connect share it. */
+function buildSnapshotPayload(admin, sparks = orderedSnapshots()) {
   const payload = {
     type: "snapshot",
-    generatedAt,
-    sparks: filterVisibleSparks(orderedSnapshots(), admin),
+    generatedAt: Date.now(),
+    sparks: filterVisibleSparks(sparks, admin),
     refreshInterval: getSettings().pollIntervalMs,
   };
+  // Only while alerts are on: the key's absence tells the UI to derive its own.
+  const alerts = alertsRuntime.snapshotBlock();
+  if (alerts) payload.alerts = alerts;
   const pluginData = collectPluginSnapshot(admin);
   if (pluginData) payload.plugins = pluginData;
   return JSON.stringify(payload);
 }
 
-function viewerPayloads(generatedAt = Date.now()) {
+function viewerPayloads(sparks = orderedSnapshots()) {
   return {
-    admin: buildSnapshotPayload(true, generatedAt),
-    public: buildSnapshotPayload(false, generatedAt),
+    admin: buildSnapshotPayload(true, sparks),
+    public: buildSnapshotPayload(false, sparks),
   };
 }
 
 /**
  * Send a payload to every open WS client.
- * - Drops clients whose send queue is backlogged (>1 MB) to avoid unbounded
- *   buffering on slow/flaky connections (e.g. phone over spotty WiFi).
- * - Returns the payload so callers can compare against the previous broadcast.
+ * Drops clients whose send queue is backlogged (>1 MB) to avoid unbounded
+ * buffering on slow/flaky connections (e.g. phone over spotty WiFi).
  */
 function sendToClient(client, payload) {
   if (client.readyState !== 1) return;
@@ -2397,33 +2480,42 @@ function broadcastPayloads(payloads) {
 }
 
 /**
- * Force an immediate broadcast, ignoring the diff cache.
+ * Hand the fleet to the MQTT bridge: entries with per-domain provenance,
+ * exactly what /metrics renders. Built only when MQTT is on, so the default
+ * (off) install pays nothing per tick; the publisher itself resends a topic
+ * only when its value changed.
+ */
+function publishMqttFleet() {
+  if (!getSettings().mqttEnabled) return;
+  mqttPublisher.publishFleet(metricsEntries(registry.sparkIds.map((id) => monitors.get(id))));
+}
+
+/**
+ * Broadcast now instead of on the next tick.
  * Used after a user action (manual refresh / hermes check / update) so the
- * UI reflects the result right away instead of on the next poll tick.
+ * UI reflects the result right away.
  */
 function forceBroadcast() {
-  _lastBroadcastPayload = viewerPayloads(0);
   broadcastPayloads(viewerPayloads());
+  publishMqttFleet();
 }
 
 function startBroadcast() {
   const interval = getSettings().pollIntervalMs;
   broadcastTimer = setInterval(() => {
-    // Nobody to send to: skip the serialization entirely. A new client gets its
-    // own snapshot on connect, so the diff cache must not survive the gap.
-    if (wss.clients.size === 0) {
-      _lastBroadcastPayload = { admin: null, public: null };
-      return;
-    }
-    // generatedAt changes every tick, so compare the bodies with it pinned;
-    // only build the real (timestamped) payloads when something changed.
-    const bodies = viewerPayloads(0);
-    const same =
-      _lastBroadcastPayload.admin === bodies.admin &&
-      _lastBroadcastPayload.public === bodies.public;
-    if (same) return;
-    _lastBroadcastPayload = bodies;
-    broadcastPayloads(viewerPayloads(Date.now()));
+    const sparks = orderedSnapshots();
+    // Alerts are evaluated once per fleet snapshot, before it goes out, so the
+    // payload carries the alerts this very snapshot produced. They run whether
+    // or not a dashboard is open.
+    alertsRuntime.tick(sparks);
+    // MQTT subscribers are not dashboards, so publish before the no-client skip below.
+    publishMqttFleet();
+    // Nobody is listening: skip serialising every unit's snapshot. A client that
+    // connects later gets a fresh one from the connection handler.
+    if (wss.clients.size === 0) return;
+    // Send every tick even when nothing changed. The UI treats snapshot arrival
+    // as its liveness signal and shows "Telemetry is stale" without it.
+    broadcastPayloads(viewerPayloads(sparks));
   }, interval);
 }
 
@@ -2432,12 +2524,12 @@ function restartBroadcast() {
     clearInterval(broadcastTimer);
     broadcastTimer = null;
   }
-  _lastBroadcastPayload = { admin: null, public: null };
   startBroadcast();
 }
 
 // ─── Start ───────────────────────────────────────────────
 loadSettings();
+mqttPublisher.applySettings();
 const startupPreflight = inspectStartupPreflight(BIND_HOST);
 logStartupPreflight(startupPreflight, BIND_HOST, PORT);
 
@@ -2452,6 +2544,17 @@ if (!startupPreflight.fatal) {
     learnTailscaleName();
     setInterval(learnTailscaleName, 10 * 60 * 1000).unref();
   }
+  // A failed listen (port in use, address not available) must end the process.
+  // The WebSocket server's own error handler only logs it, and the broadcast
+  // timer would keep a process alive that never serves a request.
+  server.on("error", (err) => {
+    if (server.listening) {
+      console.error("[sparkDash] server error:", err?.message);
+      return;
+    }
+    console.error(`[sparkDash] cannot listen on ${BIND_HOST}:${PORT}: ${err?.message}`);
+    process.exit(1);
+  });
   server.listen(PORT, BIND_HOST, () => {
     console.log(`[sparkDash] server listening on http://${BIND_HOST}:${PORT}`);
     console.log(`[sparkDash] WebSocket endpoint ws://${BIND_HOST}:${PORT}/ws`);
@@ -2461,6 +2564,8 @@ if (!startupPreflight.fatal) {
       console.warn("[sparkDash] WARNING: remote bind without SPARKDASH_TOKEN is OPEN — anyone who can reach this port can change settings and power units off. Set SPARKDASH_TOKEN to require a token.");
     }
     startAllMonitors();
+    alertsRuntime.start();
+    occupancy.start();
     fleetEnergyRuntime.start();
     llmTokenRuntime.start();
   });
@@ -2500,11 +2605,15 @@ async function shutdown(signal) {
   } catch (err) {
     console.error("[sparkDash] failed to flush event log:", err.message);
   }
+  // Publishes the dashboard's offline status and waits (bounded) for the broker's
+  // ack before closing; awaited below alongside the LLM dispatcher close.
+  const mqttStopped = mqttPublisher.stop().catch((err) => {
+    console.error("[sparkDash] failed to stop MQTT publisher:", err.message);
+  });
   try {
-    clearInterval(gpuHistoryTimer);
-    gpuHistory.stop();
+    unitHistoryRuntime.stop();
   } catch (err) {
-    console.error("[sparkDash] failed to flush GPU history:", err.message);
+    console.error("[sparkDash] failed to flush unit history:", err.message);
   }
   try {
     llmDaily.flush();
@@ -2512,8 +2621,13 @@ async function shutdown(signal) {
     console.error("[sparkDash] failed to flush LLM daily history:", err.message);
   }
   llmTokenRuntime.stop();
+  try {
+    await occupancy.stop();
+  } catch (err) {
+    console.error("[sparkDash] failed to stop occupancy poller:", err.message);
+  }
   const energyPersistenceSucceeded = fleetEnergyRuntime.stop();
-  const streamAgentClosedGracefully = await closeLlmStreamAgent();
+  const [streamAgentClosedGracefully] = await Promise.all([closeLlmStreamAgent(), mqttStopped]);
   if (!streamAgentClosedGracefully) {
     console.warn("[sparkDash] LLM dispatcher close timed out; destroyed open sockets");
   }

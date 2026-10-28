@@ -206,6 +206,10 @@
 .ov .ov-sparks[data-count="1"] {
   grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
 }
+/* Five units: a 300px minimum lets five share one row on a wide screen (5 x 330px would not fit). */
+.ov .ov-sparks[data-count="5"] {
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
 .ov .ov-side {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));

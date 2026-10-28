@@ -44,7 +44,9 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 - [Glance integration](#glance-integration)
 - [Quality bench](#quality-bench)
 - [Prometheus](#prometheus)
+- [Alert notifications](#alert-notifications)
 - [RoCE / RDMA monitoring](#roce--rdma-monitoring)
+- [Intel Arc GPUs](#intel-arc-gpus)
 - [Windows PCs](#windows-pcs)
 - [Full changelog](./CHANGELOG.md)
 - [Quick start](#quick-start)
@@ -64,8 +66,25 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 
 ## Latest version changelog
 
+### Version 2.70.0
+- **Decode benchmark**: temperature (default 0.7) and thinking on or off are selectable for every type; the copied result text and the share card show both.
+- **NVIDIA Flare** is detected and its tok/s monitored from `/metrics`.
+- **Tool Eval Bench**: compare a run on one Spark with a run from another, and expand the scenario list to a taller view.
+- **Overview** cards show CPU temperature and power; a **Cost compare** page prices fleet usage as any hosted model; Radiance and Strata engines are recognised.
+
+### Version 2.50.0
+- **Tool Eval Bench: Show card** turns a finished result into a share image (score, rating, outcomes, safety warnings, categories) you can copy or save as a PNG.
+- **Tool Eval Bench: comparison card**: tick two runs in History and get one image of the change between them.
+- **GPU clock cap** can be run on the Spark yourself, or the dashboard asks for the sudo password when a unit has no passwordless sudo.
+
+### Version 2.40.1
+- **Temps page** with day and week GPU temperature graphs for every unit, backed by a minute-resolution history kept for 7 days.
+- **GPU clock cap** set with `nvidia-smi -lgc` shows on each unit (read-only).
+- **Mac units** come online and report CPU, GPU and RAM through macmon.
+- **Fixes**: GPU and energy data on remote units whose login shell is zsh, and the TensorFold Slots tile now counts occupied lanes.
+
 ### Version 2.40.0
-- **Hide any Overview panel**: Settings has switches for Recent activity and for each of the four tiles (Fleet decode, Fleet power, Memory in use, Tokens today), next to Fleet energy and LLM token totals.
+- **Hide any Overview panel**: Settings has switches for Recent activity and for each of the four tiles (Fleet decode, Fleet power, Memory in use, Tokens in last 24 hours), next to Fleet energy and LLM token totals.
 - **LM Studio and Ollama** are detected by their own endpoints, so they are no longer labelled SGLang or vLLM; LLM panels match their port, and the Add wizard and LLM panels have LM Studio / Ollama / TensorFold port presets.
 - **Windows PCs with an AMD iGPU (Strix Halo)** show GPU use and memory from Windows' GPU counters. Windows setup docs now cover the `administrators_authorized_keys` gotcha.
 
@@ -110,12 +129,12 @@ Full history: [CHANGELOG.md](./CHANGELOG.md)
 | **Windows hosts** | Windows machines with an AMD iGPU (Strix Halo and friends) are first-class units too: agentless PowerShell over OpenSSH, CPU/RAM/disks/network collectors, and GPU usage straight from the engine performance counters (reads like Task Manager). The Add/Edit wizard has a **Strix Halo / Windows host** unit type |
 | **Live streaming** | WebSocket metrics with configurable poll intervals; central history store for sparklines across tab switches |
 | **Local + remote** | Host metrics via sysfs/proc/`nvidia-smi`; remotes over SSH (key or password) |
-| **LLM probe** | Auto-detects llama.cpp, vLLM, sglang, LM Studio, Ollama, ds4-server, EXL3, TensorFold, FreeToken, or q27; live decode/prefill tok/s from the engine's own counters where it publishes them (not LM Studio or Ollama); cached vs uncached prefill on ds4, llama.cpp, SGLang, and q27; **daily peak** history on the LLM card |
+| **LLM probe** | Auto-detects llama.cpp, vLLM, sglang, LM Studio, Ollama, ds4-server, EXL3, TensorFold, FreeToken, Strata, q27, NVIDIA Flare, Locals, or Splash; live decode/prefill tok/s from the engine's own counters where it publishes them (not LM Studio or Ollama); cached vs uncached prefill on ds4, llama.cpp, SGLang, and q27; **daily peak** history on the LLM card |
 | **LLM server presets** | One-click **LM Studio :1234** / **Ollama :11434** / **TensorFold :8888** presets in the Add wizard's LLM-ports step, the "+ Add LLM port" panel, and each LLM panel's settings (they fill the port number — they install nothing) |
 | **ComfyUI** | Opt-in probe: queue/jobs, progress, cancel, Open link, inventory, overview chip |
 | **Hermes Agent** | Opt-in per unit: background update check (10 min), status badges, one-click or batch `hermes update` |
 | **Tailnet** | Opt-in probe: flags a unit that is healthy on the LAN but off its tailnet |
-| **Decode benchmark** | Multi-concurrency streaming decode tok/s; type picker (Structured / Prose / Code / JSON). Code is a different Python task per stream. Lab protocol (temp 0, thinking off); persisted last run. Remote units: LAN HTTP, or SSH tunnel to loopback. **Remote** button for an on-demand HTTPS/host:port target |
+| **Decode benchmark** | Multi-concurrency streaming decode tok/s; type picker (Structured / Prose / Code / JSON). Code is a different Python task per stream. Temperature (default 0.7) and thinking on/off (default on) are selectable; persisted last run. **Start context** (16k to 256k or a custom size) prefills every stream to that depth first, then measures decode from there; it needs prefix caching, and a wave whose context was recomputed is flagged instead of reported as clean. Remote units: LAN HTTP, or SSH tunnel to loopback. **Remote** button for an on-demand HTTPS/host:port target |
 | **Prefill benchmark** | Context-size sweep (1k–300k) of prefill tok/s and TTFT; unique prefix per size; persisted last run. Same remote targeting as decode |
 | **Quality benchmark** | Fixed, seeded quality suite (QA, reasoning, arithmetic, state tracking, GSM8K, MMLU, plus optional instruction following and long-context recall) at temperature 0; per-category and overall score; last 30 runs kept; paired compare with McNemar p-value. Same remote targeting as decode |
 | **Prompt Showcase** | Full-page multi-terminal LLM streaming demo (up to 32 prompts) with live tok/s and copy-out |
@@ -134,6 +153,7 @@ Full history: [CHANGELOG.md](./CHANGELOG.md)
 | **Mobile + PWA** | A phone layout with a docked tab bar (Overview, Sparks, Stats, Settings); installable to the home screen over HTTPS (see [Mobile PWA](#mobile-pwa-install-on-a-phone)) |
 | **Time zone** | **Settings → Time zone** sets hour and day boundaries and labels on the Tokens, Energy and Activity charts, whatever device you view them on |
 | **Prometheus** | Opt-in `GET /metrics` export (see [Prometheus](#prometheus)) |
+| **Metrics history** | Opt-in (**Settings → Metrics history**): 48 h of 1-minute and 30 days of 15-minute avg/max per unit — GPU, memory headroom, CPU, RAM, network, LLM tok/s and KV fill — kept by the server across reloads and restarts and charted in a History panel on the unit page (1h–30d, shared crosshair). The 8 h GPU chart and 7-day Temps history are always on |
 | **Restart from the UI** | When the fleet changes and Energy needs a restart, a **Restart sparkDash** button restarts the Docker container (only offered when it can) |
 | **Themes** | Dark, light, cool white, OLED — neutral palettes, persisted in `localStorage` |
 | **Secrets** | SSH passwords AES-256-GCM encrypted; never in `sparks.json` or API responses |
@@ -449,12 +469,84 @@ The exporter reads the snapshot sparkDash already holds, so scraping adds no SSH
 | `sparkdash_network_receive_bytes_per_second`, `…_transmit_bytes_per_second` | gauge | `interface` | Interfaces hidden in sparkDash are skipped |
 | `sparkdash_disk_used_bytes`, `…_available_bytes`, `…_total_bytes` | gauge | `mount`, `device` | Devices hidden in sparkDash are skipped |
 | `sparkdash_llm_up` | gauge | `port`, `backend`, `model` | One per LLM endpoint (head and standalone units) |
+| `sparkdash_llm_measurement_valid` | gauge | `port`, `backend`, `model` | 1 when the endpoint's stats were read on the last poll, 0 when it answered but they could not be read (the rate and counter series are then omitted) |
 | `sparkdash_llm_generation_tokens_per_second`, `sparkdash_llm_prefill_tokens_per_second` | gauge | `port`, `backend`, `model` | |
 | `sparkdash_llm_kv_cache_usage_ratio` | gauge | `port`, `backend`, `model` | Where the backend reports it |
 | `sparkdash_llm_requests_running`, `sparkdash_llm_requests_waiting` | gauge | `port`, `backend`, `model` | Where the backend reports it |
 | `sparkdash_llm_generated_tokens_total`, `sparkdash_llm_prompt_tokens_total`, `sparkdash_llm_cached_prompt_tokens_total` | counter | `port`, `backend`, `model` | The engine's own lifetime counters — they reset when the engine restarts, which `rate()` handles |
 
 Unknown is left out rather than written as zero: a failed GPU read, a sensor that does not exist, or a field the LLM backend does not publish produces no sample.
+
+---
+
+## Alert notifications
+
+Opt-in (default **off**): **Settings → Alert notifications → Configure…**. The server sends a notification to ntfy, Discord, Slack or a JSON webhook when a problem has held for a while, and again when it clears — whether or not a dashboard is open.
+
+### What notifies
+
+Nothing new is detected here. The conditions are the ones sparkDash already shows, with their own thresholds:
+
+- the **Health findings** on the unit cards (`server/health/HealthEvaluator.js`: GPU temperature, unified memory, stuck low-power state, Xid / OOM, RoCE link and loss, slow link, several models loaded), and
+- the **Overview exceptions** (`src/shared/fleetExceptions.js`, the strip's own code): unit offline, thermal or hardware throttle (never the software power cap), storage at or above 90 %, LLM unavailable, tailnet unavailable.
+
+Each can be switched off, and given its own wait. Timing works like Prometheus: a condition has to hold for its wait before it fires (until then it is *pending*), and a firing alert clears only after the condition has stayed clear for the same wait (at least 30 s), so a reading hovering on a threshold does not notify on every crossing. An offline unit keeps its other alerts as they are instead of clearing them. The firing set is saved, so a restart neither repeats a notification nor resets a duration.
+
+The Activity log keeps recording what happened, as before; on top, every notification sent or failed is an `alert.notify.sent` / `alert.notify.failed` event (category *Alert notifications*), which names the channel and the alert — never the URL, never what the server answered.
+
+### Channels
+
+| Type | What is sent |
+|------|--------------|
+| `ntfy` | `POST` plain text to the topic URL with `Title`, `Priority` (5 critical, 4 warning, 3 resolved) and `Tags` headers — ntfy.sh or self-hosted |
+| `discord` | Discord webhook JSON: `content` plus one embed per alert (mentions disabled) |
+| `slack` | Slack incoming-webhook JSON `{ "text": … }`; `&`, `<` and `>` are escaped, so unit names and remote text cannot add mentions or links |
+| `webhook` | Generic JSON `{ source, status, severity, title, reminder, sentAt, alerts: [{ status, severity, rule, ruleName, unit, unitId, label, summary, startsAt, endsAt }] }` |
+
+Everything that fires or clears in one evaluation goes out as one message per channel, filtered by the channel's minimum severity. **Remind while still firing** (off by default) repeats firing alerts every 1 h / 4 h / 12 h / 24 h. Text that comes from elsewhere (unit names, SSH errors, kernel Xid lines, model ids) is cut to 120 characters.
+
+How sends are made:
+
+- **Outbound policy.** A channel URL must be `http(s)` and pass the same target policy as units and LLM endpoints (`server/validate.js`): LAN, Tailscale and loopback addresses are fine (a self-hosted ntfy), link-local / cloud-metadata, multicast and unspecified addresses are refused. The host is checked when the channel is saved and resolved again on every send; the connection goes to exactly the address that was checked, so a DNS record that changes in between cannot redirect it.
+- **No redirects.** A `3xx` answer is a failed send (`redirect not followed`).
+- **No response bodies.** A failure is reported as a status code or a fixed reason (`HTTP 403`, `timed out after 10s`, `connection failed (ECONNREFUSED)`) — in the dialog, the log and Activity alike.
+- **No retries.** Each message is sent once. A failed send is logged, shown on the channel and recorded in Activity (`alert.notify.failed`), but the alert still counts as notified: the channel next hears about it when it escalates, clears, or — with **Remind while still firing** on — at the next reminder. Use **Send test** to check a channel after changing it.
+- **Channel URLs may point at your LAN.** Like unit and LLM targets, a channel can be a private or loopback address (a self-hosted ntfy), so `POST /api/alerts/test` shows, to anyone who holds the dashboard token, whether a host and port on those networks answers (a status code or a fixed reason, never the response body). Link-local, metadata, unspecified and multicast addresses are refused, and the connection is pinned to the addresses that were checked. Set `SPARKDASH_TOKEN` if the dashboard is reachable beyond your own machine.
+
+Example — phone notifications with [ntfy](https://ntfy.sh): subscribe the ntfy app to a topic nobody will guess (e.g. `sparkdash-7f3k9q`), turn notifications on, **Add channel** with type `ntfy` and URL `https://ntfy.sh/sparkdash-7f3k9q` (or your own server), **Save**, then **Send test**.
+
+### Where the configuration lives
+
+Channel URLs are credentials, so they are stored encrypted in `config/sparks-secrets.json` next to the unit passwords and LLM API keys, and the API only ever shows them masked (`https://ntfy.sh/…`: the host and a fixed mask, nothing of the topic or token; saving the masked value unchanged keeps the stored URL). `config/alerts.json` (`ALERTS_JSON_PATH`, mode `0600`) holds the rest: rule switches and waits, channel names and types, and the firing set. A plaintext URL left in `alerts.json` by an earlier build is moved into the encrypted store when the server starts.
+
+While notifications are off, nothing is evaluated or sent, and `PUT /api/alerts/config` and `POST /api/alerts/test` answer `409`. While on, the WebSocket snapshot carries `alerts.active` and the Overview exceptions strip lists the server's alerts with their real durations.
+
+### In the browser
+
+**Settings → Tab badge / Desktop notifications** (per browser, both off by default): the tab title shows how many fleet alerts are active — `(2) sparkDash` — with a red (critical) or amber dot on the icon, and a desktop notification pops up when one becomes active while the page is open. Both count every alert the strip knows of — the server's alerts while notifications are on, otherwise the strip's own conditions with the temperature unit applied — including offline units, storage, LLM and Health while *Show active fleet exceptions* is off and the strip itself shows throttling only. Conditions the browser derives itself must hold for 30 s before they count and stay clear for 30 s before they stop, so a flapping reading notifies once. Browsers only allow notifications on HTTPS or localhost — on a plain-HTTP LAN address, use an SSH tunnel, Tailscale Serve or an HTTPS proxy, or an ntfy channel.
+
+---
+
+## MQTT
+
+Opt-in (default **off**). **Settings → MQTT publishing** forwards what sparkDash already holds to your own broker as it changes — no scraping of the dashboard and no extra SSH: the fleet event stream, per-unit availability and per-unit readings, published as JSON. Useful with Home Assistant, Node-RED, Telegraf or anything else that speaks MQTT.
+
+**Settings → MQTT** holds the broker URL (`mqtt://host:1883`, `mqtts://` for TLS, `ws(s)://` for a websocket broker), the username (empty for anonymous) and the topic prefix (default `sparkdash`). The password never goes into `config/settings.json` (that file is world-readable): set `SPARKDASH_MQTT_PASSWORD` in the server's environment instead. For the same reason a URL with credentials in it (`mqtt://user:pass@host`) is refused, and one found in an existing `settings.json` is removed from the file at startup. A changed URL, username or prefix reconnects immediately; the password is read once at startup. Everything is published under the prefix, so `PREFIX/#` sees the whole feed:
+
+| Topic | Payload | Published |
+|-------|---------|-----------|
+| `PREFIX/events` | one JSON activity-feed record per event (`id`, `ts`, `type`, `severity`, `sparkId`, `sparkName`, `message`, and `data` where present) | every accepted event, QoS 1 (the same 5 s dedupe as the Activity page applies) |
+| `PREFIX/status/{unitId}` | `1` or `0`, **retained** | whenever it changes (and on reconnect); the last state survives a broker restart and a new subscriber learns it immediately. Removing a unit clears its retained status and metrics (an empty retained message) |
+| `PREFIX/metrics/{unitId}` | `{ts, up, …}` — the JSON twin of the unit's Prometheus series (fields below; semantics in [Prometheus](#prometheus)) | whenever the readings change (and on reconnect), QoS 0, **retained** |
+| `PREFIX/dashboard/status` | `1` while sparkDash is connected, `0` on shutdown and as its last-will message, **retained** | on connect; on a clean shutdown (sparkDash waits up to 1.5 s for the broker to acknowledge it); by the broker if sparkDash dies uncleanly |
+
+`PREFIX/metrics/{unitId}` is one unit's readings in a nested shape — `{ts, up, uptime_seconds, gpu: [{index, name, uuid, utilization_ratio, temperature_celsius, power_watts, power_limit_watts, memory_used_bytes, memory_total_bytes, throttled: {thermal, power, hw}}], memory_available_bytes, cpu: {utilization_ratio, temperature_celsius, temperature_source}, ram: {used_bytes, total_bytes}, net: [{interface, receive_bytes_per_second, transmit_bytes_per_second}], disks: [{mount, device, used_bytes, available_bytes, total_bytes}], llm: [{port, backend, model, up, generation_tokens_per_second, prefill_tokens_per_second, kv_cache_usage_ratio, requests_running, requests_waiting, generated_tokens_total, prompt_tokens_total, cached_prompt_tokens_total}], collector_last_success_seconds}`. An LLM entry whose endpoint answered but whose stats could not be read carries `measurement_valid: 0` and no rates or counters. An unreachable unit publishes `{ts, up: 0}` on its metrics topic, and a reading the collectors could not take is omitted rather than reported as zero — the same rules `/metrics` follows.
+
+```bash
+mosquitto_sub -h homeassistant.local -t 'sparkdash/#' -v
+```
+
+Publishing is best-effort: while the broker is unreachable sparkDash retries every 5 s in the background and drops messages instead of queueing them, so a long outage leaves a gap rather than a backlog. A slow broker is handled the same way: at most 100 publishes wait for acknowledgement at once, beyond that new events are dropped and changed readings are sent once it catches up, and a connection that leaves a publish unacknowledged for 30 s is reopened. Nothing on the publish path can block a poll loop (warnings are rate-limited to one line per 30 s). For Home Assistant, `PREFIX/status/{unitId}` drives a binary sensor and each `PREFIX/metrics/{unitId}` key maps to a template sensor; for Node-RED the JSON is directly `msg.payload`.
 
 ---
 
@@ -467,6 +559,28 @@ Everything comes from the Spark itself: `/sys/class/infiniband`, `/sys/class/net
 Two health findings use it: **a RoCE link went down** (a port that was up, critical) and **RoCE is dropping packets** (RDMA loss counters such as `out_of_buffer` or sequence errors rising for three samples in a row, or port discards / CRC errors rising on two consecutive 30 s readings; a single dropped frame is not reported). Ports that never came up are not reported. Switch telemetry (PFC and ECN statistics on the switch side) is not part of this; it could be added later as an optional integration.
 
 ---
+
+## Intel Arc GPUs
+
+Discrete Intel GPUs bound to the Linux `xe` driver show up in the GPU panel next to NVIDIA and AMD cards, locally and on SSH units. Everything is read from sysfs and hwmon, with no vendor tool: temperature, fan, clock and power cap directly; power in watts from the card's energy counter (a delta between polls); usage from the GT idle residency. Integrated GPUs (PCI bus 00) and `i915` cards are not read. Intel cards have their own index range (2000 and up) and `vendor: "intel"`.
+
+**VRAM.** Exact VRAM use lives in root-only debugfs (`/sys/kernel/debug/dri/<pci-address>/tile<N>/vram_mm`). Reading it is **off by default**: with **Settings → Intel Arc VRAM via sudo** off, no `sudo` runs on any host and the card shows its PCI BAR size as the total (`vramSource: "pci-bar"`, usage unknown). When it is on, the probe runs `sudo -n cat <exact path>` for `tile0` first and then `tile1` to `tile3`, one path per call, and the first file that answers wins. The result is cached for 45 seconds, and a host where `sudo -n` fails is not asked again for 10 minutes, so neither case floods the host's auth log.
+
+**The sudoers rule.** Grant the SSH user that one command on the exact files and nothing wider. A bare `cat` grant (or `ALL`) would let that user read any file as root. Pin each card's debugfs files by its PCI address (`lspci -D | grep -i -E 'vga|display'`, for example `0000:3a:00.0`):
+
+```
+# /etc/sudoers.d/sparkdash-intel-vram   (edit with: sudo visudo -f /etc/sudoers.d/sparkdash-intel-vram)
+Cmnd_Alias SPARKDASH_INTEL_VRAM = \
+    /usr/bin/cat /sys/kernel/debug/dri/0000\:3a\:00.0/tile0/vram_mm, \
+    /usr/bin/cat /sys/kernel/debug/dri/0000\:3a\:00.0/tile1/vram_mm, \
+    /usr/bin/cat /sys/kernel/debug/dri/0000\:3a\:00.0/tile2/vram_mm, \
+    /usr/bin/cat /sys/kernel/debug/dri/0000\:3a\:00.0/tile3/vram_mm
+sparky ALL=(root) NOPASSWD: SPARKDASH_INTEL_VRAM
+```
+
+Use the full path of `cat` that `command -v cat` prints for that user (`/usr/bin/cat` or `/bin/cat`; they are the same file on merged-`/usr` systems) and escape the colons of the PCI address with a backslash, as above. Do not use `*` in the paths: in sudoers a wildcard also matches spaces and `/`, so `.../dri/*/tile0/vram_mm` would also allow `cat` of other files. On sudo 1.9.10 or newer a regular expression pins the same set: `/usr/bin/cat ^/sys/kernel/debug/dri/[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]/tile[0-3]/vram_mm$`. Check the rule with `sudo -n cat /sys/kernel/debug/dri/<pci-address>/tile0/vram_mm` as that user. The local unit (the container with `pid: host`) runs as root and needs no rule.
+
+**Health.** Intel cards are shown and counted in the power and VRAM totals but are not judged by the NVIDIA-tuned health thresholds. If `nvidia-smi` is installed but returns no devices on a host that has an Intel card, the GPU collection is reported as failed (the Intel card is still shown), so a broken NVIDIA driver does not look healthy; a host with no `nvidia-smi` at all is treated as Intel-only.
 
 ## Windows PCs
 
@@ -510,8 +624,13 @@ LM Studio (:1234), Ollama (:11434) and TensorFold (:8888) are one-click presets 
 | q27 | Prometheus exposition |
 | TensorFold | `owned_by` on `/v1/models`, totals from `/health` |
 | FreeToken | `/v1/stats` throughput contract |
+| Strata | `/health` reports `service: "strata"`, checked before the llama.cpp-compatible `/slots`; JSON `/metrics` supplies rates |
 
 Detection is **positive-signature first**: some desktop engines (LM Studio) answer HTTP 200 with a JSON body on *every* path, which would trip naive heuristics ("does `/server_info` return JSON?" → SGLang, or the vLLM default). sparkDash probes each engine's unique endpoint and never lets a catch-all-200 server downgrade an identified backend.
+
+Strata monitoring follows the [v0.1.45 JSON metrics contract](https://github.com/Niko1221/Strata/blob/477ac13cbe8e582c20484871ce459d20d82df09d/serve/server.py#L3738-L3790). **Decode** uses the aggregate sliding-window rate. When a newer request is prefilling and hides that rate, it sums the available decoding-slot rates and labels the result **active-slot mean** (each slot's mean starts at its first generated token). It publishes no partial sum if a decoding slot lacks a rate or work is running outside the slots. **Prefill** is the engine's **last reported mean** for new/computed prompt tokens, shown while the selected request is reading and either a slot is reading or unfinished engine progress confirms prefill outside the slots; the value may come from an earlier prefill and is not a sum across concurrent slots. A busy phase without a rate says **decoding** or **prefilling**. Idle clears both rates immediately. Completed-request totals are retained as totals, never turned into live rates; restarting Strata therefore does not create a TPS spike. No per-slot prefill throughput or KV-cache occupancy is inferred from held prompt tokens.
+
+Strata's model aliases share the loaded engine's native context limit, shown on both the LLM panel and overview card. Its loaded engine is **Active** even when idle. The sidebar retains numeric decode rates, uses **prefilling** or **decoding** while work is active without a decode rate, and returns to zero when idle.
 
 ### Decode / prefill tok/s on engines without counters
 
@@ -530,6 +649,84 @@ sparkDash only needs the engine's HTTP port; it does not care how the engine was
 - A Docker-based start script that detaches (`docker run -d`) shows **Stopped** in the Models panel because the script's process group is gone, while the port probe shows **Serving**. Treat the port status as the source of truth (the **Output** button re-opens the script's output while it runs).
 - Provisioning models (pulling weights, choosing a recipe) stays with your own tool; the Models panel only runs the `start.sh` / `stop.sh` you register.
 
+Model launchers require Bash, util-linux `setsid`, and GNU `tail` with `--pid` support on the Linux unit. **Start** and live **Output** drain the log before reporting completion, including the last line without a newline. The follower tracks the script's whole process group, so output continues when the wrapper exits but the model process is still running.
+
+---
+
+## GPU clock cap
+
+### Set it from the dashboard
+
+**Edit unit → GPU clock cap** (Spark units on Linux only; hosts, Windows and Macs do not show it) caps the graphics clock with `nvidia-smi -lgc 0,MAX`, the same thing the standalone [sparkLimiter](https://github.com/MiaAI-Lab/sparkLimiter) script does. It shows the cap in effect and the GPU maximum, and has:
+
+- **Apply** — caps the clock now (300 MHz up to the GPU maximum). It is lost at the next reboot unless the option below is on.
+- **Keep after reboot** — installs the boot hook this unit can take: `spark-gpu-clock-limit.service` (a oneshot unit that re-applies the cap at boot; the same name sparkLimiter uses, so the two manage one unit) where sudo reaches a root shell and systemd runs, otherwise an `@reboot` line in the SSH user's own crontab tagged `# sparkdash-gpu-clock-cap` that runs the very same `sudo -n nvidia-smi -lgc` the cap just ran. Only one hook is kept at a time: installing one removes the other. Other crontab lines are never touched (our line is the one that ends in the tag), and a crontab that cannot be read is left alone and the change refused. The `@reboot` job tries three times; if every attempt fails it writes a failure marker (`~/.config/sparkdash/gpu-clock-cap.failed`, holding that boot's id) and tries `logger -t sparkdash`, and the dialog then shows that the job ran at this boot and the GPU is not capped. The next **Apply**, or **Remove limit**, clears it. The checkbox names the hook. Switching it off removes it.
+- **Remove limit** — runs `nvidia-smi -rgc` and removes both hooks and the marker.
+  If an old root-owned marker cannot be removed after sudo permissions were narrowed, Apply and Remove refuse before changing clocks or boot hooks. Use the per-unit password/manual-command flow with sufficient privileges to clean up the marker; the error names the affected path.
+
+It acts at once on the unit's saved connection settings; it is not part of **Save**. Activity records each change.
+
+**Run it on the Spark yourself.** The section also has a *Run it on the Spark yourself* panel (open by default when no password can be typed in the dashboard). **Show command: apply / remove** gives a command to paste into a terminal on the Spark. It is the same steps as the buttons, as a short readable script, but with plain `sudo`, so **sudo asks for your password there** and the result is printed in plain words (non-zero exit on failure). Nothing is sent to the dashboard, and it works when the dashboard has no sudo or the unit is offline to it. API: `GET /api/sparks/:id/gpu-clock/command?action=apply&maxMHz=1800&persist=1` (or `action=reset`).
+
+Needs root on the unit: the local unit runs as root through the host mount namespace (like Shutdown); a remote one uses `sudo`. A passwordless rule for the commands the cap itself runs — the shape [sparkLimiter](https://github.com/MiaAI-Lab/sparkLimiter) installs, with the arguments pinned as in **The narrow sudoers rule** below — is enough to cap, read back and unlock; the marker then goes to the SSH user's `~/.config/sparkdash/gpu-clock-cap`, which the status read checks alongside the root-owned one. **Keep after reboot** installs a boot hook, so it needs either `NOPASSWD: ALL` (or root) for the systemd unit, or a running cron service for the `@reboot` job; where neither is available the box is disabled with the reason inline, before the GPU is touched. Without passwordless sudo the section asks for the **sudo password** of that user: it is sent once over your connection to the dashboard, passed to `sudo -S` on the unit through stdin (never in a command line, never in the program text, and dropped from the environment before anything else runs), used for that one change, then discarded. It is never stored or logged, a wrong password is reported as such, and three wrong ones lock that account for five minutes (and nine across all units). The dashboard only accepts a typed password over **https or from the machine itself** (a plain `http://<lan-ip>` page would send it in the clear; a same-host reverse proxy on plain http is recognised by its forwarding headers and does not count as local); there the buttons stay off and the paste-in command below is offered. If starting the boot service fails, the previous service is restored and the cap stays applied until the next reboot. If an old boot hook cannot be removed after a cap without **Keep after reboot** was applied, the error says so: the cap is in force and recorded, but the old hook will re-apply its own cap at the next boot. A cap above the GPU's maximum is refused, only validated whole numbers reach the unit, and `nvidia-smi` is only taken from fixed system paths (`/usr/bin`, `/usr/local/bin`, `/bin`), never from `PATH`. The `@reboot` line also contains the path of `sudo` and the SSH user's home directory, which come from the unit: each must be a plain absolute path (letters, digits, `_ . / -`), otherwise the change is refused before the GPU is touched. API: `GET|PUT|DELETE /api/sparks/:id/gpu-clock` (same token and rate limits as the power routes).
+
+Apply and Remove require Linux `flock` (from util-linux, at `/usr/bin/flock` or `/bin/flock`). They share a per-user lock at `~/.config/sparkdash/gpu-clock-cap.lock` with the dashboard's `@reboot` job, including when the cap marker is root-owned. The job sleeps outside the lock, then checks its install token and changes clocks and markers while holding it. A completed Remove therefore cannot be undone by an older in-flight job. Missing locking support or an inaccessible lock refuses the operation before changing clocks or hooks; do not delete the lock file while an operation is running.
+
+Cron persistence also requires the exact NVIDIA cap command to work **without a password or cached sudo authentication**. Its initial cap uses `sudo -k -n` to establish that; a typed password alone cannot authorize a boot-time command. If refused, apply without **Keep after reboot**, or grant the narrow `NOPASSWD` rule below. An unreadable crontab makes status fail rather than claiming that no hook is installed.
+
+**The narrow sudoers rule.** Do not grant `nvidia-smi -lgc *`: in sudoers a `*` also matches spaces and further words, so the user could pass any other `nvidia-smi` option to root (`-lgc 0,1800 --id=0` is allowed by that rule). Pin the arguments. On sudo 1.9.10 or newer, with a regular expression:
+
+```
+# /etc/sudoers.d/sparkdash-gpu-clock   (edit with: sudo visudo -f /etc/sudoers.d/sparkdash-gpu-clock)
+sparky ALL=(root) NOPASSWD: /usr/bin/nvidia-smi ^-lgc 0,[0-9]+$, /usr/bin/nvidia-smi -rgc
+```
+
+On older sudo, list the exact commands instead (the commas inside an argument are escaped). The Settings presets are 1800 to 2400 MHz in 100 MHz steps; a custom value from **Edit unit** needs its own line:
+
+```
+sparky ALL=(root) NOPASSWD: /usr/bin/nvidia-smi -lgc 0\,1800, /usr/bin/nvidia-smi -lgc 0\,1900, /usr/bin/nvidia-smi -lgc 0\,2000, /usr/bin/nvidia-smi -lgc 0\,2100, /usr/bin/nvidia-smi -lgc 0\,2200, /usr/bin/nvidia-smi -lgc 0\,2300, /usr/bin/nvidia-smi -lgc 0\,2400, /usr/bin/nvidia-smi -rgc
+```
+
+Use the path `command -v nvidia-smi` prints for that user. Both forms were checked against sudo 1.9.17: `-lgc 0,1800` and `-rgc` run without a password, while `-lgc 0,1800 -q`, `-lgc 0,18x0`, `-lgc 300,1800` and `-rgc -i 0` ask for one. The status check asks `sudo -l nvidia-smi -lgc 0,2400`, which both forms allow. The `@reboot` job runs the same `sudo -n nvidia-smi -lgc 0,MAX` line, so the same rule covers it.
+
+The current value is shown on the unit: `cap 1800 MHz` under the SM clock on the GPU panel and a `Cap 1.8 GHz` chip on the Overview card. A unit capped with the standalone script shows no value until you press **Apply** once, because that script writes no marker.
+
+### Cap the whole fleet at once
+
+**Settings → GPU clock cap** is the same control for every unit, shown as the states a Spark can be in: **Full capacity** (no cap) and **1800–2400 MHz** in 100 MHz steps. The state every Spark is on is marked; picking another only selects it — **Save** applies the picked state to every unit first, and stores settings only when that operation succeeds. Units already changed are not rolled back when another refuses. A mixed fleet marks nothing. The list stops at 1800 so a cap cannot silently underclock below the range the fleet runs at. **Keep after reboot** installs a boot hook on each unit — the systemd service where `NOPASSWD: ALL` reaches `systemctl` and `install`, an `@reboot` cron job where only the `nvidia-smi` commands are granted: where every unit that answered can keep the cap the tick starts on, and where none can it is disabled with that reason, leaving the cap until the next reboot. **Full capacity** removes the cap everywhere (`nvidia-smi -rgc` plus both hooks and the marker) and asks for no confirmation.
+
+It runs each unit's own change in turn through the same path as the per-unit dialog, so the sudo requirements above apply unchanged — including that **Keep after reboot** needs a boot hook on each unit; one unit failing does not stop the others, and the row reports the per-unit outcome (`3 of 4 units, 1 skipped`) plus which hook each unit took (`kept after reboot by the boot service` / `by the @reboot cron job`) instead of a bare success. A unit that cannot take a cap at all — a host, a Windows or Mac unit, a box without `nvidia-smi` — is reported as skipped, not as an error; but a fleet where every unit was skipped changed nothing, so the answer is `success: false` with `applied: 0` and the row says `Nothing changed`. The whole batch has a three-minute budget: units not reached by then are reported as not attempted. API: `POST /api/sparks/gpu-clock-all` with `{ maxMHz, persist? }`, or `{ reset: true }` to clear it everywhere; the answer is `{ success, applied, results }`.
+
+If every attempted unit reports a failure, the summary warns that some changes may already have applied: a cap can take effect before installing or removing its reboot hook fails. The requested state stays pending for retry; the per-unit errors and refreshed live status show what happened.
+
+A failed Save remains pending even if the live cap already matches the pick: installing or removing its boot hook may still need to be retried. Save retries the operation before storing other settings, and a failed **Keep after reboot** request keeps its checkbox selected until you explicitly change it.
+If the GPU operation succeeds but storing settings fails, Save remains available and retries the settings request without reapplying the successful GPU operation.
+A persistence-only change keeps the fleet's known shared frequency. Save compares the requested state with each unit's installed hooks, not just its current MHz or its ability to install a hook. Missing, disabled, failed, duplicate or differently configured hooks remain actionable. Opening Settings alone does not queue a GPU change; on a mixed or unreadable fleet, pick a frequency before changing persistence.
+Selecting **Full capacity** also removes installed boot hooks when the GPUs are already unlocked. A selection remains pending if any supported unit could not be read. In the per-unit dialog, an installed but currently unavailable boot hook can still be unticked. Each cron install has its own token: a delayed reboot job whose line has been removed or replaced exits instead of restoring the old cap.
+
+### How the value is read
+
+`nvidia-smi -lgc 0,<MHz>` locks the max graphics clock, but NVML has no way to
+read that lock back (`clocks.max.*` stays at the hardware max). So whoever sets
+the lock drops a one-line marker on the Spark, and sparkDash shows it as
+`cap 1800 MHz` under the SM clock on the GPU panel, a `Cap 1.8 GHz` chip on the
+Overview card, and `gpu.throttle.clockCapMHz` in the API.
+
+```bash
+# set
+sudo nvidia-smi -lgc 0,1800
+mkdir -p ~/.config/sparkdash
+echo "1800 $(cat /proc/sys/kernel/random/boot_id)" > ~/.config/sparkdash/gpu-clock-cap
+
+# revert
+sudo nvidia-smi -rgc
+rm -f ~/.config/sparkdash/gpu-clock-cap
+```
+
+The marker is read from `/run/sparkdash/gpu-clock-cap` (for a root-run unit)
+or `~/.config/sparkdash/gpu-clock-cap` of the SSH user. The optional boot_id
+makes a stale marker disappear after a reboot, when the lock is gone too.
+
 ## Quick start
 
 ```bash
@@ -544,7 +741,7 @@ npm install
 npm run dev
 ```
 
-- **Docker**: open **http://127.0.0.1:5555** on the host (arm64 image, auto-restart, host mounts for GPU/metrics access). The compose file serves the frontend from the host's `./dist` when it has been built (`npm run build`) and from the copy baked into the image otherwise, so a fresh clone works; a host build that is older than the image's copy is ignored, so after `git pull` one `docker compose up --build -d` is enough
+- **Docker**: open **http://127.0.0.1:5555** on the host (auto-restart, host mounts for GPU/metrics access). The image is built for the machine's own architecture — Docker detects it, so a DGX Spark builds and runs the arm64 image as before and an x86 box builds a native amd64 one, with no emulation and no *image platform does not match the host platform* warning. Both architectures are supported: `docker compose -f docker-compose.yml -f docker-compose.multiarch.yml build` produces the arm64 and amd64 variants in one manifest list (the pair the release workflow publishes), and `DOCKER_DEFAULT_PLATFORM=linux/arm64` (or `linux/amd64`) cross-targets a single one. The compose file serves the frontend from the host's `./dist` when it has been built (`npm run build`) and from the copy baked into the image otherwise, so a fresh clone works; a host build that is older than the image's copy is ignored, so after `git pull` one `docker compose up --build -d` is enough
 - **Dev**: Vite on **http://localhost:5173** (proxies API/WS to Express)
 
 For another computer, keep the server on loopback and use an SSH tunnel:
@@ -562,7 +759,7 @@ For development with Docker (source-mounted, HMR):
 docker compose -f docker-compose.dev.yml up --build
 ```
 
-**Published image (no local build):** each release tag (`v*`) is built for arm64 and amd64 and pushed to `ghcr.io/miaai-lab/sparkdash`. `docker-compose.image.yml` runs that image with the same host mounts and environment as `docker-compose.yml`; it is the only file the host needs, and `./config` next to it holds the runtime state:
+**Published image (no local build):** each release tag (`v*`) is built for arm64 and amd64 and pushed to `ghcr.io/miaai-lab/sparkdash`. The workflow only runs for tags pushed after it was added, so releases up to v2.32.0 have no image: until the first newer release is out, `docker pull` answers `denied` (an unpublished package looks the same as a private one) and you build from source (`docker compose up --build -d`). `docker-compose.image.yml` runs that image with the same host mounts and environment as `docker-compose.yml`; it is the only file the host needs, and `./config` next to it holds the runtime state:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/MiaAI-Lab/sparkDash/main/docker-compose.image.yml
@@ -648,7 +845,7 @@ sparkDash/
 │   ├── collectors/      SystemCollector, LlmProbe, ssh, RoCE, Windows (PowerShell)
 │   ├── health/          HealthEvaluator (findings)
 │   ├── energy/          Fleet energy tracker + monthly archive
-│   ├── llmtokens/       Token ledger · events/ Activity log · metrics/ GPU history
+│   ├── llmtokens/       Token ledger · events/ Activity log · metrics/ Unit history (GPU chart, Temps week, 48 h / 30 d tiers)
 │   ├── llmlaunch/       Model launchers · tooleval/ Tool Eval Bench
 │   ├── secretsStore.js  Encrypted password persistence
 │   └── validate.js      Host/user validation (SSRF-minded)
@@ -678,11 +875,14 @@ sparkDash/
 | GET | `/api/fleet-energy/history` | Hourly / daily energy buckets for the Fleet energy page |
 | GET/DELETE | `/api/fleet-energy/monthly` | Permanent per-UTC-month energy totals; `DELETE` needs `?month=YYYY-MM` or `?all=true&confirm=delete-all-history` |
 | GET | `/api/llm-token-totals` · `/api/llm-token-totals/history` | Cumulative LLM tokens by model, and the hourly / daily history behind the Token totals page |
-| GET | `/api/sparks/:id/gpu-history` | Last hours of GPU utilization, temperature and power % (`windowMs`, up to 8 h; parallel arrays) |
+| GET | `/api/sparks/:id/gpu-history` | GPU utilization, temperature and power % (`windowMs`; up to 8 h at ~2 s resolution, up to 7 days at minute resolution from the long-retention store; parallel arrays) |
+| GET | `/api/sparks/:id/history` | Bucketed unit history, `range=1h\|6h\|24h\|7d\|30d` (default `1h`): `points` of `{ t, <series>: { avg, max, min? } }` plus per-port `llm` series, at most ~500 points; `{ enabled: false }` while `metricsHistory` is off, `400` for another range |
 | GET/POST | `/api/restart` | `GET` says whether the server can restart itself (Docker with a restart policy); `POST` shuts down cleanly so Docker starts it again |
 | DELETE | `/api/events` · `/api/fleet-energy` | Clear Activity or Fleet energy: everything, or only entries older than `?olderThanMs=` |
 | DELETE | `/api/llm-token-totals` | Reset Token totals (all Sparks, or one with `?sparkId=`) |
 | GET | `/api/health` · `/api/auth/status` | Bind / auth mode; whether a token is required and accepted |
+| GET · PUT · DELETE | `/api/sparks/:id/gpu-clock` | GPU clock cap on a Spark unit: status, apply (`maxMHz`, `persist`), remove (see [GPU clock cap](#gpu-clock-cap)) |
+| POST | `/api/sparks/gpu-clock-all` | GPU clock cap on every Spark at once: `{ maxMHz, persist? }`, or `{ reset: true }`; one result per unit (see [GPU clock cap](#gpu-clock-cap)) |
 | POST | `/api/sparks/:id/shutdown` · `/wake` · `/api/sparks/shutdown-all` · `/wake-all` | Power controls (see [Power controls](#power-controls-shutdown--wake-on-lan)) |
 | POST | `/api/sparks/:id/refresh/:domain` | Re-poll one domain now (`storage` or `llm` only) |
 | GET/POST/DELETE | `/api/sparks/:id/llm/showcase[/:sessionId]` | Prompt Showcase sessions |
@@ -704,6 +904,8 @@ sparkDash/
 | POST | `/api/sparks/:id/llm/prefill-bench` | Start prefill + TTFT context sweep (202); poll/cancel/clear on the same path |
 | POST | `/api/sparks/:id/llm/quality-bench` | Start quality suite (202); `GET` lists active / last / history summaries, `GET :benchId` returns a full run, `DELETE :benchId` cancels, `DELETE` clears history |
 | GET | `/metrics` | Prometheus exposition (opt-in, see [Prometheus](#prometheus)) |
+| GET | `/api/alerts` · `/api/alerts/config` | Firing, pending and recent alerts; rules and channels (URLs masked) — see [Alert notifications](#alert-notifications) |
+| PUT/POST | `/api/alerts/config` · `/api/alerts/test` | Save rules and channels; send a test message (both `409` while notifications are off) |
 | GET | `/api/settings` | Global settings |
 | PUT | `/api/settings` | Update global settings |
 | WS | `/ws` | Real-time metrics stream |
@@ -751,11 +953,44 @@ Gear icon in the header, or `GET`/`PUT` `/api/settings`:
 | Electricity price / currency | not set / `$` | Per kWh, for the estimated cost on the Fleet energy page; empty hides cost |
 | Show LLM Token Totals | true | Overview card with cumulative tokens per model |
 | Show Recent activity | true | Overview card with the latest health and kernel events (the Activity page is always in the sidebar) |
-| Show Fleet decode / Fleet power / Memory in use / Tokens today tile | true | Each of the four Overview tiles can be hidden on its own; the rest share the row (Tokens today also covers the Online count that replaces it when no tokens are tracked) |
+| Show Fleet decode / Fleet power / Memory in use / Tokens in last 24 hours tile | true | Each of the four Overview tiles can be hidden on its own; the rest share the row (Tokens in last 24 hours also covers the Online count that replaces it when no tokens are tracked) |
 | Show active fleet exceptions | false | Overview strip for offline units, throttling, disk and LLM alerts |
 | Show search and status filters | false | Overview search field and status dropdown |
 | Save benchmark debug traces | false | Store prompts, HTTP ids and GPU samples in bench history (larger files) |
 | Prometheus metrics | false | Serve `GET /metrics` for Prometheus / Grafana (see [Prometheus](#prometheus)); `404` while off |
+| Intel Arc VRAM via sudo (`intelVramSudo`) | false | Read exact Intel Arc VRAM use through `sudo -n cat` on pinned debugfs files (see [Intel Arc GPUs](#intel-arc-gpus)); off shows the PCI BAR size and runs no sudo |
+| Metrics history (`metricsHistory`) | false | Keep 48 h of 1-minute and 30 days of 15-minute history per unit (GPU, memory headroom, CPU, RAM, network, LLM tok/s and KV) and show it in a History panel at the bottom of each unit's page (also `GET /api/sparks/:id/history`). The panel polls every 30 s only while it is on screen. Readings are gaps, not zeros, while a unit is offline or a collection is failed or older than 3 × the poll interval (at least 15 s). Stored in `config/metrics-history.json` (at most ~1 MB per unit, +~0.3 MB per LLM port), saved every 5 min and on shutdown; nothing is recorded or written while off |
+| Alert notifications (`alertsEnabled`) | false | Notify ntfy / Discord / Slack / a webhook about Health findings and Overview exceptions (see [Alert notifications](#alert-notifications)); while off nothing is evaluated or sent |
+| MQTT publishing | false | Publish the activity feed, per-unit availability and readings to an MQTT broker as they change (see [MQTT](#mqtt)); broker URL, username and topic prefix are set in the same dialog |
+| Session age (`occupancyMaxAgeMs`) | 12 hours | Hide harness sessions older than this. Settings offers 1 hour through 14 days. A missing or out-of-range value becomes 12 hours. There is no unlimited value |
+| GPU temperature alerts (`healthTempWarnC`, `healthTempCriticalC`) | 85, 90 | °C at which the Health finding for a hot GPU warns and turns critical; Alert notifications use the same limits. Each is a number from 40 to 110 and the warning must be lower than critical, otherwise the save is refused (`400` from `PUT /api/settings`). The values apply to every unit and to NVIDIA cards only, as before |
+
+### Harness sessions
+
+Each LLM card can list sessions from OpenClaw, OpenCode, oh-my-pi, Hermes and DeepSeek Harness. One occupancy helper runs on the machine that has those tools. The dashboard does not open an ACP connection per session and does not spawn a bridge per poll. It stores the helper URL and bearer token, then reads that helper's cache.
+
+Open the wizard from **Settings → Harness sessions**, the command palette (**Set up harness sessions**), or **+ Harness** on an empty LLM card. Pick the harnesses, the helper URL and token, and a route for each harness (Spark, port, optional directory prefix). **Check connection** reports coverage and a session count. It does not show session titles, install packages, or start an agent. If the helper rejects the token, the wizard says so. That response does not open the dashboard's own access-token dialog.
+
+On the helper machine:
+
+```bash
+OCCUPANCY_BIND=127.0.0.1 \
+OCCUPANCY_TOKEN="$(openssl rand -hex 32)" \
+OCCUPANCY_ADAPTERS=openclaw,opencode,omp,hermes,dsh \
+node scripts/occupancy-helper/index.js
+```
+
+`OCCUPANCY_ADAPTERS` lists only the harnesses you enabled. Hermes reads `HERMES_STATE_DIR` (it does not launch `hermes-acp`, because that list path can write). DeepSeek Harness reads `DSH_WEB_URL` (default `http://127.0.0.1:3080`). A helper bound to anything other than loopback requires `OCCUPANCY_TOKEN`, and it refuses `0.0.0.0` and `::`. A helper hostname that is not loopback must be listed in `SPARKDASH_HELPER_HOSTS`.
+
+A missing ACP command marks that adapter unavailable while the helper keeps serving its cache. Adapter subprocesses keep their harness configuration but do not receive `OCCUPANCY_TOKEN`. ACP stdout frames are capped at 2,000,000 bytes, including unfinished lines; exceeding the cap closes that bridge and retains any previous rows as stale. Diagnostic RPC history retains only the latest 64 method names.
+
+Bearer tokens are sent over HTTPS outside loopback; a plain HTTP helper resolving to a LAN or tailnet address is refused when a token is configured. Use an HTTPS endpoint for a remote helper. Loopback HTTP remains supported. Helper PUT and DELETE requests share a limit of 30 changes per minute per dashboard principal (or client IP without a principal).
+
+DSH refreshes have one 8-second budget for headers, bodies and optional model lookups, with a 1 MB streamed response cap per RPC. A stalled private adapter cannot hold another adapter's refresh guard. Closing the helper cancels private reads. Hermes reports an absent session store as unavailable, accepts a real empty store, and reads its SQLite fallback asynchronously with a bounded subprocess. ACP cleanup sends SIGTERM to its owned process group and escalates to SIGKILL after 250 ms.
+
+Each dashboard helper request has an 8-second deadline, including its response body. Disconnects, oversized responses and malformed occupancy replies fail that helper's refresh. Replies must carry the helper's existing version-1 envelope (`schemaVersion`, numeric `observedAt`, `adapters`, and `rows`). Dashboard snapshots use cached helper configuration; a corrupt config keeps the last valid configuration until repaired, logs a warning, and cannot be overwritten through helper mutations.
+
+ACP rows are metadata only: they can look recent, and they are never labeled Generating or Stalled. Those labels are reserved for Hermes and DeepSeek Harness when the adapter itself reports a running session. A row with no timestamp stays in the list and stays unlabeled. Sessions with no matching route stay off the cards.
 
 ### Environment variables
 
@@ -767,6 +1002,9 @@ Copy `.env.example` to `.env` if needed:
 | `SPARKDASH_TOKEN` | _(empty)_ | Bearer token. When set, it is required for every mutation and WebSocket connection, and for REST reads on a non-loopback bind. The browser prompts for it when needed (Settings → Access token to change it). |
 | `SPARKDASH_ALLOW_OPEN_REMOTE` | `1` | Unset, empty, or `1`: a non-loopback bind without `SPARKDASH_TOKEN` stays open. `0`: refuse to start without a token (fail closed). |
 | `SPARKDASH_ALLOWED_HOSTS` | _(empty)_ | Only for a reverse proxy on a custom domain: comma-separated names a loopback bind should also answer to. `localhost`, IP addresses, this machine's hostname and its Tailscale name work without it. |
+| `SPARKDASH_MQTT_PASSWORD` | _(empty)_ | Password for the MQTT broker configured in Settings → MQTT (the URL and username live in `settings.json`). Read once at startup. |
+| `SPARKDASH_HELPER_HOSTS` | _(empty)_ | Extra hostnames allowed for harness occupancy helpers, comma separated. `localhost`, `127.0.0.1` and `::1` are always allowed. The dashboard connects only to an address from that lookup and does not follow redirects |
+| `OCCUPANCY_POLL_MS` | `15000` | How often the dashboard reads each helper's cache. Clamped to 5–120 seconds |
 | `PORT` | `5555` | HTTP + WebSocket listen port |
 | `LLM_PORT` | `8888` | Default LLM probe port |
 | `COMFY_PORT` | `8188` | Default ComfyUI probe port |
@@ -788,9 +1026,17 @@ Copy `.env.example` to `.env` if needed:
 | `HOST_SYS_PATH` | `/host/sys` | Host sys mount |
 | `HOST_ROOT_PATH` | `/host/root` | Host root mount |
 | `SSH_IDENTITY_FILE` | _(unset)_ | Path **inside the process** to a private key (`ssh -i`). Use when the bind-mount is not a default OpenSSH name. |
+| `MACMON_PATH` | _(unset)_ | macOS units: path to [macmon](https://github.com/vladkens/macmon) on the Mac, when it is not in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin` or the SSH PATH. macmon (no sudo) supplies CPU / GPU usage, temperatures, RAM and system power for Mac units. |
 | `SSH_CONTROL_PERSIST_SECONDS` | `60` | Idle SSH transport persistence in seconds, capped at `3600`. Set to `0` to disable multiplexing. |
+| `MAX_ACTIVE_BENCH_JOBS` | `2` | Benchmarks (decode, prefill, quality) that may run at the same time across the whole fleet; each unit still runs one at a time. Clamped to 1–32. A start above the cap is refused with 429. Docker compose passes it through; set it in `.env`. |
 | `FLEET_ENERGY_JSON_PATH` | `config/fleet-energy.json` | Rolling fleet-energy persistence path |
 | `FLEET_ENERGY_MONTHLY_JSON_PATH` | `config/fleet-energy-monthly.json` | Permanent monthly energy archive |
+| `GPU_HISTORY_JSON_PATH` | `config/gpu-history.json` | 8 h GPU chart history |
+| `GPU_HISTORY_LONG_JSON_PATH` | `config/gpu-history-long.json` | 7-day minute-resolution GPU history (Temps page) |
+| `METRICS_HISTORY_JSON_PATH` | `config/metrics-history.json` | 48 h / 30 d unit history (only with `metricsHistory` on) |
+| `ALERTS_JSON_PATH` | `config/alerts.json` | Alert rule switches, channel settings (no URLs) and the firing set |
+| `MODEL_PRICES_FETCH` | `0` | **Cost compare**: when `1`, the server refreshes the hosted-model price catalog once a day from `raw.githubusercontent.com` (the community litellm list). Opt-in so an install never phones out unasked; while off, the Cost compare page serves the last catalog on disk and makes no requests |
+| `MODEL_PRICES_JSON_PATH` | `config/model-prices.json` | **Cost compare**: where the last good price catalog is persisted (the offline / opt-out fallback). Pre-seed it to use the page with `MODEL_PRICES_FETCH` off |
 
 For compatibility, `SSH_CONTROL_PERSIST` is accepted as a seconds-based fallback when `SSH_CONTROL_PERSIST_SECONDS` is unset. The existing `SSH_MULTIPLEX=0` switch also disables reuse. SSH tunnels always use an independent connection.
 
@@ -811,6 +1057,10 @@ For compatibility, `SSH_CONTROL_PERSIST` is accepted as a seconds-based fallback
    - **LLM host** (optional, `llmHost` in the unit's config): when the model API listens on one specific address of a multi-interface Spark, pin it here; probes and benchmarks then use it instead of the LAN IP (SSH keeps using the SSH host). An unreachable `llmHost` is never tunnelled to the SSH host's loopback.
 4. **Test** shows pass/fail/skipped for host collectors/SSH and each enabled service (LLM, ComfyUI, Hermes Agent, Tailnet). Every enabled capability must pass; disable an unavailable optional service before saving if it should not be monitored.
 5. Save — a tab appears and metrics start streaming.
+
+### When an engine moves to another node
+
+Head and worker roles are configured, not discovered: a worker is never probed for LLM endpoints, and a head is always monitored. If a tensor-parallel recipe moves rank 0 and its API to the former worker, edit the units so the API-serving node is the Head, update the other node to Worker and its head link, and verify the Head's LLM ports. Token totals resume from newly observed counters; traffic during the unmonitored period cannot be reconstructed. sparkDash does not currently detect this role mismatch or automatically follow the engine.
 
 ### Loaded models in private containers
 
@@ -905,6 +1155,7 @@ Choice is stored in `localStorage`.
 | `npm run docker:up` | `docker compose up -d` |
 | `npm run docker:prod` | Same as `docker:up` |
 | `npm run docker:rebuild` | `docker compose up --build -d` |
+| `npm run docker:multiarch` | Build the arm64 + amd64 variants into one manifest list |
 | `npm run docker:dev` | Dev Compose |
 | `npm run docker:dev:build` | Dev Compose with rebuild |
 | `./deploy.sh` | Recreate container; `--build`, `--frontend` flags |
@@ -946,6 +1197,7 @@ Each configured LLM port gets its own `LlmProbe` instance running in parallel. P
 - **llama.cpp** — `/slots` for live decode rates; model from `/props`
 - **ds4-server** (Entrpi/ds4-on-spark) — `/v1/models` (`owned_by: ds4.c`) + Prometheus `ds4_*` token counters for live tok/s
 - **EXL3** (ExLlamaV3 `tools/serve_openai.py`) — `/v1/models` (`owned_by: exl3`) or `/health` `{ok, busy}`; live tok/s from `/health` cumulative counters
+- **Flare** (NVIDIA flare-local-inference) — `/v1/models` card with a `flare` object; live tok/s from `flare_generated_tokens_total` / `flare_prefill_tokens_total` counter diffs, cached vs uncached prefill from `flare_cache_reused_tokens_total`, slots, queue, preemptions and KV pool from `flare_*` gauges
 - **q27** (signalnine/q27 engine) — `/v1/models` (`owned_by: q27`) or Prometheus `q27_*` series; live tok/s from `q27_*_processed` counter diffs (completion-based totals as fallback), exact computed-only prefill with the cached/uncached split doubling as the prefix-cache hit rate, TTFT/E2E/ITL p95 histograms, and constant-0 preemptions (FIFO admission, no wait queue)
 - **TensorFold** (ashhart/TensorFold) — `/v1/models` (`owned_by: tensorfold`). No `/metrics`. Live tok/s comes from `/health` when it publishes `prompt_tokens_total`, `completion_tokens_total`, and `prefill_seconds_total` (decode is the completion-counter diff; prefill is prompt tokens ÷ prefill time). The slots tile reads `streams.max` and `requests_running` on CUDA 0.6.0, and `max_batch_size` on MLX. A stock server that only returns `{ok: true}` stays at 0. Decode/prefill benches and the showcase work regardless.
 - **FreeToken** — `/v1/models` (`owned_by: FreeToken`), or a `/v1/stats` document with `throughput.decode_tps` / `prefill_tps` and lifetime prompt/completion totals. Those rates are FreeToken's own 5-second window (0 when idle). `requests.ttft_mean_ms` is a mean; `requests.p95_ms` is end-to-end latency, not TTFT p95. Queue length, slot capacity, and preemptions stay unset.
@@ -1003,6 +1255,22 @@ Contributions are welcome. Conventions:
 - Run `npm test` and `npm run typecheck` before a pull request. Tests that start the server must point every config file at a temp directory (`server/__tests__/isolatedEnv.js`)
 - Read [AGENTS.md](./AGENTS.md) and [CODEBASE.md](./CODEBASE.md) first
 
+### Interface language
+
+Settings → Language switches immediately between English and 简体中文, remembers the choice in this browser (`sparkdash-locale`) and updates `<html lang>`. It applies without Save and preserves pending settings edits. A supported stored preference takes precedence over the browser language; unsupported languages fall back to English. Simplified Chinese tags and the earlier `zh-Hans` preference map to `zh-CN`; Traditional Chinese is not supported yet. Switching still works for the current page when browser storage is blocked.
+
+This foundation translates Settings and its embedded browser-alert controls. Navigation, other pages, the separate Alerts dialog, access-token prompt and raw server diagnostics remain English for later page-sized changes. Server settings and other users' language preferences are unaffected.
+
+`src/i18n/index.ts` owns one i18next/react-i18next instance, initialized by `src/main.tsx` before React mounts. The small `language` and `settings` catalogs are bundled eagerly. English JSON in `src/locales/en/` is the source of truth and fallback; `src/locales/zh-CN/` mirrors each page or namespace. Add future namespace imports and resources to this same loader.
+
+Use `const { t } = useTranslation("settings")` with static keys such as `t("dialog.save")`. Add the English entry first, then its translation. Use plain i18next interpolation (`"Hello, {{name}}"`) and ordinary plural keys (`items_one` / `items_other` with a numeric `count`); there is no ICU plugin or `intl-messageformat`. React escapes rendered text. Keep IDs, settings values and raw diagnostics separate from display text, and store stable message reasons rather than translated strings so feedback updates on language changes.
+
+`npm test` runs `npm run i18n:check` and the checker's regression fixtures before the server and frontend suites. The AST check validates wired keys against English catalogs, including missing keys/catalogs, duplicate JSON keys, orphan Chinese keys and interpolation mismatches. Use static hook namespaces and distinct `t` aliases for multiple namespaces; dynamic or ambiguous calls, inline defaults and direct `i18n.t()` calls are rejected. The checker does not measure untranslated text coverage. Per-call namespace overrides (`t("key", { ns })`) and `<Trans>` are not checked yet; keep this foundation's static-hook pattern until those forms have coverage.
+
+The two direct build dependencies are exactly pinned: `i18next@26.4.2` (published 2026-09-03) and `react-i18next@17.0.15` (2026-09-21), both more than two weeks old when submitted. Their new transitive packages are `@babel/runtime@7.29.7`, `html-parse-stringify@4.0.1` and `use-sync-external-store@1.7.0`; a scoped override holds the first at its reviewed version. The lockfile leaves existing resolutions unchanged. See [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for licenses. The checker currently uses `rolldown/parseAst` supplied transitively by Vite, so validate that import when changing the build dependencies.
+
+Validate with a supported Node release such as 22.23.2: `npm ci`, `npm test`, `npm run typecheck` and `npm run build`. The server suite needs native Linux/POSIX tools, Python 3.11+ and Git; install zsh to exercise the login-shell probe. In a browser, check Settings at desktop and phone sizes, switch English → 简体中文 → English, reload, check accessible labels and horizontal overflow, and verify a pending setting survives a language switch and Save. Use synthetic data for writes.
+
 ---
 
 ## License
@@ -1030,3 +1298,11 @@ The [`sparkdash-dgx-cluster`](https://github.com/glanceapp/community-widgets/tre
 - Built with [React](https://react.dev/), [Vite](https://vitejs.dev/), [Tailwind CSS](https://tailwindcss.com/), [Express](https://expressjs.com/), [ws](https://github.com/websockets/ws), [undici](https://github.com/nodejs/undici), [dnd kit](https://dndkit.com/) and [dotenv](https://github.com/motdotla/dotenv). Licenses and copyright notices are in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 
 Built for the **NVIDIA DGX Spark (GB10)** on ARM64.
+
+### Cost compare without a price catalog
+
+On a fresh install, Cost compare shows **No price data yet** until a catalog is supplied. Catalog fetching is off by default: set `MODEL_PRICES_FETCH=1` and restart the server to opt in, or pre-seed `MODEL_PRICES_JSON_PATH` for offline use, then click **Retry**. A failed enabled fetch remains an error unless a cached catalog is available. Choose a hosted model explicitly to compare costs; the page does not infer a provider from local model names.
+
+### Interpreting RoCE traffic
+
+The RoCE panel shows netdev byte-counter rates, which do not measure RDMA payload throughput; a busy tensor-parallel link can therefore show little netdev traffic. Pause-frame counters are cumulative totals and are separate from the current PFC setting. RDMA error counters and their deltas remain available in the panel.

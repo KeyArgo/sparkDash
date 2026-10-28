@@ -2,6 +2,8 @@ import { BenchIcon } from "./components/bench/BenchIcon";
 import { setConfiguredTimeZone } from "./shared/timeZone";
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useSnapshot } from "./hooks/useSnapshot";
+import { useFleetAlerts } from "./hooks/useFleetAlerts";
+import { useBrowserAlerts } from "./hooks/useBrowserAlerts";
 import { useAppRoute, useRoute } from "./hooks/useRoute";
 import { useSmoothWheel } from "./hooks/useSmoothWheel";
 import { fetchSparks, reorderSparks, fetchSettings, fetchHealth } from "./api/client";
@@ -19,6 +21,7 @@ import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { ShowcaseView } from "./components/ShowcasePage/ShowcaseView";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { HarnessWizard } from "./components/HarnessWizard";
 import {
   GearIcon,
   GridIcon,
@@ -32,6 +35,9 @@ import {
   ListIcon,
   PanelLeftIcon,
   TokensIcon,
+  ThermometerIcon,
+  BotIcon,
+  CoinsIcon,
 } from "./components/ui/icons";
 import { AdminBar } from "./components/AdminBar";
 import { useAdmin } from "./hooks/useAdmin";
@@ -42,7 +48,9 @@ import {
   SHOWCASE_ID,
   ENERGY_ID,
   OVERVIEW_ID,
+  TEMPS_ID,
   TOKENS_ID,
+  COST_ID,
   benchId,
   benchTypeOf,
   idToPath,
@@ -50,7 +58,9 @@ import {
   isStaleSparkId,
 } from "./constants";
 import { TokensPage } from "./components/TokensPage/TokensPage";
+import { CostPage } from "./components/CostPage/CostPage";
 import { EnergyPage } from "./components/EnergyPage/EnergyPage";
+import { TempsPage } from "./components/TempsPage/TempsPage";
 import { ActivityPage } from "./components/ActivityPage/ActivityPage";
 import { BenchPage } from "./components/bench/BenchPage";
 import { BENCH_SPARK_KEY, BENCH_TYPES } from "./components/bench/benchCatalog";
@@ -175,6 +185,7 @@ function DashboardApp() {
     snapshotError,
     refreshInterval,
     reconnect,
+    serverAlerts,
   } = useSnapshot();
   const sparks = snapSparks;
   const activeSpark = liveActive;
@@ -183,6 +194,8 @@ function DashboardApp() {
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showHarness, setShowHarness] = useState(false);
+  const [harnessSparkId, setHarnessSparkId] = useState<string | undefined>();
   // Desktop sidebar can be hidden to give the page the full width; remembered per browser.
   const [sideHidden, setSideHidden] = useState(() => {
     try {
@@ -250,6 +263,16 @@ function DashboardApp() {
     for (const s of map.values()) ordered.push(s);
     return ordered;
   }, [liveSparks, orderOverride]);
+
+  // Tab badge + desktop notifications (both opt-in, per browser): the strip's own
+  // list, every alert whatever the strip shows. Live snapshots only — placeholders from the REST fallback are all "offline".
+  const fleetAlerts = useFleetAlerts({
+    sparks,
+    alertsEnabled: settings?.alertsEnabled ?? false,
+    serverAlerts,
+    temperatureUnit: settings?.temperatureUnit ?? "celsius",
+  });
+  useBrowserAlerts(fleetAlerts.rows, fleetAlerts.ready && settings != null, fleetAlerts.source);
 
   // Drop override once server/WS order matches
   useEffect(() => {
@@ -455,9 +478,11 @@ function DashboardApp() {
     ];
     cmds.push(
       { id: "nav:tokens", group: "Go to", label: "Token totals", hint: "Page", icon: <TokensIcon className="h-4 w-4" />, keywords: "llm tokens generated prompt cached usage", run: () => navigate(TOKENS_ID) },
+      { id: "nav:cost", group: "Go to", label: "Cost compare", hint: "Page", icon: <CoinsIcon className="h-4 w-4" />, keywords: "cost price money usd dollars api hosted opus sonnet gpt gemini compare", run: () => navigate(COST_ID) },
       { id: "nav:energy", group: "Go to", label: "Fleet energy", hint: "Page", icon: <BoltIcon className="h-4 w-4" />, keywords: "power kwh watts cost electricity", run: () => navigate(ENERGY_ID) },
+      { id: "nav:temps", group: "Go to", label: "Temps", hint: "Page", icon: <ThermometerIcon className="h-4 w-4" />, keywords: "gpu temperature thermal temps heat cooling", run: () => navigate(TEMPS_ID) },
       { id: "nav:showcase", group: "Go to", label: "Showcase", hint: "Page", icon: <TerminalIcon className="h-4 w-4" />, keywords: "prompts terminals stream demo", run: () => navigate(SHOWCASE_ID) },
-      { id: "nav:activity", group: "Go to", label: "Activity", hint: "Page", icon: <ListIcon className="h-4 w-4" />, keywords: "events log history recent", run: () => navigate(ACTIVITY_ID) }
+      { id: "nav:activity", group: "Go to", label: "Activity", hint: "Page", icon: <ListIcon className="h-4 w-4" />, keywords: "events log history recent", run: () => navigate(ACTIVITY_ID) },
     );
     for (const s of displaySparks) {
       cmds.push({
@@ -492,7 +517,8 @@ function DashboardApp() {
     cmds.push(
       { id: "act:theme", group: "Actions", label: "Switch theme", hint: "white · light · dark · oled", icon: <SunIcon className="h-4 w-4" />, keywords: "appearance dark light", run: () => window.dispatchEvent(new Event("sparkdash:cycle-theme")) },
       { id: "act:sidebar", group: "Actions", label: "Show or hide the sidebar", icon: <PanelLeftIcon className="h-4 w-4" />, keywords: "collapse expand navigation rail menu", run: toggleSidebar },
-      { id: "act:settings", group: "Actions", label: "Open settings", icon: <GearIcon className="h-4 w-4" />, keywords: "preferences density refresh", run: () => setShowSettings(true) }
+      { id: "act:settings", group: "Actions", label: "Open settings", icon: <GearIcon className="h-4 w-4" />, keywords: "preferences density refresh", run: () => setShowSettings(true) },
+      { id: "act:harness", group: "Actions", label: "Set up harness sessions", icon: <BotIcon className="h-4 w-4" />, keywords: "occupancy openclaw opencode hermes oh-my-pi wizard", run: () => { setHarnessSparkId(undefined); setShowHarness(true); } }
     );
     return cmds;
   }, [displaySparks, displayActive, navigate, toggleSidebar]);
@@ -564,8 +590,12 @@ function DashboardApp() {
             <main key={chartTimeZone} className={telemetryStale || !connected ? "telemetry-stale" : undefined}>
               {activeId === TOKENS_ID ? (
                 <TokensPage sparks={displaySparks} onSelectSpark={navigate} />
+              ) : activeId === COST_ID ? (
+                <CostPage />
               ) : activeId === ENERGY_ID ? (
                 <EnergyPage sparks={displaySparks} settings={settings} onSelectSpark={navigate} />
+              ) : activeId === TEMPS_ID ? (
+                <TempsPage sparks={displaySparks} onSelectSpark={navigate} />
               ) : activeId === ACTIVITY_ID ? (
                 <ActivityPage sparks={displaySparks} onSelectSpark={navigate} />
               ) : activeId === SHOWCASE_ID ? (
@@ -580,6 +610,8 @@ function DashboardApp() {
                   showFleetEnergy={settings?.showFleetEnergy ?? true}
                   showInferenceActivity={settings?.inferenceActivityEnabled === true}
                   showFleetExceptions={settings?.showFleetExceptions ?? false}
+                  alertsEnabled={settings?.alertsEnabled ?? false}
+                  serverAlerts={serverAlerts}
                   showOverviewSearch={settings?.showOverviewSearch ?? false}
                   showLlmTokenTotals={settings?.showLlmTokenTotals ?? true}
                   showActivityFeed={settings?.showActivityFeed ?? true}
@@ -602,7 +634,13 @@ function DashboardApp() {
                   temperatureUnit={settings?.temperatureUnit ?? "celsius"}
                   benchShareImage={settings?.benchShareImage ?? false}
                   locked={admin.isLocked(displayActive.id)}
+                  metricsHistory={settings?.metricsHistory ?? false}
                   onEdit={() => setEditId(displayActive.id)}
+                  onNavigate={navigate}
+                  onAddHarness={() => {
+                    setHarnessSparkId(displayActive.id);
+                    setShowHarness(true);
+                  }}
                 />
               ) : !fleetLoaded || staleSpark ? null : (
                 <div className="panel mx-auto mt-16 max-w-md p-8 text-center">
@@ -658,6 +696,21 @@ function DashboardApp() {
         open={showSettings}
         onClose={() => setShowSettings(false)}
         onSaved={handleSettingsSaved}
+        onOpenHarness={() => {
+          setShowSettings(false);
+          setHarnessSparkId(displayActive?.id);
+          setShowHarness(true);
+        }}
+      />
+      <HarnessWizard
+        open={showHarness}
+        onClose={() => setShowHarness(false)}
+        sparkId={harnessSparkId}
+        sparks={displaySparks.map((spark) => ({
+          id: spark.id,
+          name: spark.name,
+          llmPorts: spark.llmPorts?.length ? spark.llmPorts : [spark.llmPort],
+        }))}
       />
     </div>
   );

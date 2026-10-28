@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { addSpark, testSparkConfig } from "../api/client";
 import type { SparkConfig, SparkTestResponse } from "../api/types";
 import { useModalPresence } from "../hooks/useModalPresence";
+import { useOverlayClose } from "../hooks/useOverlayClose";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { CheckIcon, ChevronRightIcon, XIcon } from "./ui/icons";
 import {
@@ -100,6 +101,7 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
 
   const { mounted, visible } = useModalPresence(open);
   const trapRef = useFocusTrap(mounted);
+  const overlayClose = useOverlayClose(onClose);
 
   useEffect(() => {
     if (!mounted) return;
@@ -204,9 +206,7 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
   return createPortal(
     <div
       className={`modal-overlay${visible ? " is-open" : ""}`}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      {...overlayClose}
     >
       <div
         ref={trapRef}
