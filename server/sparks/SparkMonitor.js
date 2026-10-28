@@ -12,6 +12,11 @@ import { llmDaily } from "../collectors/LlmDaily.js";
 import { HealthEvaluator } from "../health/HealthEvaluator.js";
 import { getSettings } from "../settings.js";
 import { sshExec } from "../collectors/ssh.js";
+import {
+  GUEST_PAIR_BY_SPARK_ID,
+  TENSORFOLD_MODEL,
+  guestCountsFor,
+} from "../collectors/TensorfoldTelemetry.js";
 import { llmProbeHost } from "../collectors/llmHost.js";
 import {
   candidatePorts,
@@ -758,6 +763,31 @@ export class SparkMonitor {
     });
   }
 
+  /**
+   * Fleet LLM telemetry (TensorFold rank-0 :8888 via the SSH batch): derived
+   * rates, client attribution and guest counts. The shape is always present;
+   * values stay null until the engine has answered (rates need two polls).
+   * @returns {Record<string, unknown>}
+   */
+  _llmTelemetry() {
+    const tf = /** @type {any} */ (this.collector?.tfTelemetry) ?? null;
+    const num = (v) => (Number.isFinite(v) ? v : null);
+    const pair = GUEST_PAIR_BY_SPARK_ID[this.spark.id] ?? null;
+    return {
+      tok_per_s: num(tf?.tok_per_s),
+      decode_tps: num(tf?.decode_tps),
+      prefill_s: num(tf?.prefill_s),
+      ttft_s: num(tf?.ttft_s),
+      kv_pct: num(tf?.kv_pct),
+      running: num(tf?.running),
+      waiting: num(tf?.waiting),
+      clients: Array.isArray(tf?.clients) ? tf.clients : [],
+      guests: pair ? guestCountsFor(pair) : {},
+      model: tf?.serving ? TENSORFOLD_MODEL : null,
+      serving: Boolean(tf?.serving),
+    };
+  }
+
   /** Return a full snapshot of this Spark's metrics. */
   snapshot() {
     const configured = this._llmMonitoringEnabled() ? Array.from(this.llmProbes.keys()) : [];
@@ -798,6 +828,8 @@ export class SparkMonitor {
       comfyPort: this._comfyPort(),
       tailscaleMonitoring: tailscaleOn,
       hermes: this._hermes,
+      // Fleet LLM telemetry (TensorFold) — every field nullable, additive only.
+      llm: this._llmTelemetry(),
       health: this._health,
       hardware: this._hardwareSummary,
       metrics: {
@@ -1072,6 +1104,7 @@ export class SparkMonitor {
   _invalidateSshMetrics() {
     if (this.spark.isLocal) return;
     const c = this.collector;
+    this.collector.resetTensorfold?.();
     // Their data is gone; the series must restart from the first fresh poll after recovery.
     for (const key of ["gpu", "cpu", "ram", "memory", "network", "storage", "roce"]) delete this._lastSuccess[key];
     this._metrics.gpu = c._defaultGpu();

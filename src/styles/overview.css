@@ -332,6 +332,16 @@
 .ov .ov-sc__msg {
   font-size: 12px;
 }
+/* One muted LLM telemetry line (TensorFold) under the gauges; single-line, truncated. */
+.ov .ov-sc__llm {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--color-faint, var(--color-muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
 /* One compact line under Storage: what this Spark serves (or its worker role). */
 .ov .ov-modelrow {
   display: flex;

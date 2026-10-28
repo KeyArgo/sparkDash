@@ -1,5 +1,5 @@
 import { memo, useState } from "react";
-import type { SparkSnapshot } from "../../api/types";
+import type { SparkSnapshot, SparkLlmTelemetry } from "../../api/types";
 import { resolveSparkRole } from "../../api/sparkRole";
 import { usableHead } from "../../shared/sparkHead";
 import { wakeSpark } from "../../api/client";
@@ -26,6 +26,40 @@ function fmtStorage(mb: number, unit: boolean): string {
   const label = mb >= 1024 ? "GB" : "MB";
   const s = val.toFixed(1).replace(/\.0$/, "");
   return unit ? `${s} ${label}` : s;
+}
+
+/** Seconds → `180ms` / `1.2s`; null-safe. */
+function fmtSeconds(s: number | null | undefined): string | null {
+  if (s == null || !Number.isFinite(s)) return null;
+  return s < 1 ? `${Math.round(s * 1000)}ms` : `${s.toFixed(1)}s`;
+}
+
+/**
+ * One muted summary line for the fleet LLM (TensorFold) telemetry. Every
+ * segment is optional: null fields are dropped, an all-null telemetry renders
+ * just the `LLM` prefix.
+ */
+export function llmTelemetryText(llm: SparkLlmTelemetry | null | undefined): string | null {
+  if (!llm?.serving) return null;
+  const parts: string[] = ["LLM"];
+  if (llm.model) parts[0] = `LLM ${llm.model}`;
+  const rate = llm.tok_per_s != null && Number.isFinite(llm.tok_per_s) ? `${llm.tok_per_s.toFixed(1)} tok/s` : null;
+  const prefill = fmtSeconds(llm.prefill_s);
+  const ttft = fmtSeconds(llm.ttft_s);
+  const kv = llm.kv_pct != null && Number.isFinite(llm.kv_pct) ? `kv ${Math.round(llm.kv_pct)}%` : null;
+  if (rate) parts.push(rate);
+  if (prefill) parts.push(`prefill ${prefill}`);
+  if (ttft) parts.push(`ttft ${ttft}`);
+  if (kv) parts.push(kv);
+  const clients = (llm.clients ?? [])
+    .map((c) => c?.label ?? c?.ip)
+    .filter((x): x is string => Boolean(x));
+  if (clients.length) parts.push(`clients: ${clients.join(", ")}`);
+  const guests = Object.entries(llm.guests ?? {});
+  if (guests.length) {
+    parts.push(`guests: ${guests.map(([alias, n]) => (n > 1 ? `${alias} x${n}` : alias)).join(", ")}`);
+  }
+  return parts.join(" · ");
 }
 
 function Bar({
@@ -80,6 +114,7 @@ function SparkCardImpl({
   onSelect?: (id: string) => void;
 }) {
   const gpu = spark.metrics.gpu;
+  const llmLine = llmTelemetryText(spark.llm);
   const um = spark.metrics.unifiedMemory;
   const online = spark.online;
   const role = resolveSparkRole(spark);
@@ -336,6 +371,11 @@ function SparkCardImpl({
               {cpuPower ? <Bar label="CPU power" caption={`${cpuPower.draw} / ${cpuPower.tdp} W`} pct={cpuPowerPct} color="var(--color-violet)" /> : null}
             </div>
           </div>
+          {llmLine ? (
+            <div className="ov-sc__llm" title={llmLine}>
+              {llmLine}
+            </div>
+          ) : null}
           {showLauncher ? <ModelLauncher spark={spark} onOpen={onSelect} busy={loadingHint} busyHolders={gpuHolders.length > 0} freeMb={memTotal > 0 ? memAvail : null} lowFreeMb={HEADROOM_THRESHOLDS_MB[memoryModelFor(spark.kind)].low} /> : null}
           {role === "worker" ? (
             <div className="ov-launch ov-launch--worker">

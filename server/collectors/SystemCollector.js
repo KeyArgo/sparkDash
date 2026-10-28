@@ -6,6 +6,12 @@ import { normalizeMac, WOL_INTERFACE } from "../wol.js";
 import { sshExec } from "./ssh.js";
 import { getSettings } from "../settings.js";
 import { RoceSampler } from "./roce.js";
+import {
+  deriveTfDeltas,
+  labelClient,
+  parseTensorfoldMetrics,
+  parseTfClients,
+} from "./TensorfoldTelemetry.js";
 import { IntelSudoGate, IntelVramCache, buildIntelProbeScript, parseIntelProbe, sampleIntelCards } from "./intelGpu.js";
 import {
   WINDOWS_GPU_SCRIPT,
@@ -417,7 +423,7 @@ export function parseMacIoregDiskStats(output) {
   return { readBytes, writeBytes };
 }
 
-const REMOTE_GPU_SECTIONS = new Set(["NVIDIA", "NVIDIA_VRAM", "NVIDIA_APPS", "AMD", "AMD_LIMITS", "INTEL", "MEMINFO", "CLOCK_CAP"]);
+const REMOTE_GPU_SECTIONS = new Set(["NVIDIA", "NVIDIA_VRAM", "NVIDIA_APPS", "AMD", "AMD_LIMITS", "INTEL", "MEMINFO", "CLOCK_CAP", "TF", "TF_CLIENTS"]);
 
 /**
  * Split the remote GPU probe output into named sections. A section starts at a
@@ -572,6 +578,12 @@ export class SystemCollector {
     this._intelVram = new IntelVramCache();
     // Whether any xe-driver card exists on this host (local path), re-checked rarely
     this._intelPresent = { value: null, at: 0 };
+
+    // TensorFold LLM telemetry (see TensorfoldTelemetry.js). Null until the
+    // remote GPU batch returns __TF__ sections; derived rates needs two polls.
+    this._tfPrev = null;
+    /** @type {Record<string, any> | null} latest derived telemetry snapshot */
+    this.tfTelemetry = null;
 
     // Cached hardware info
     this._hardwareInfo = null;
@@ -2078,6 +2090,43 @@ export class SystemCollector {
   }
 
   // ─── Remote collection via SSH ────────────────────────────
+  /**
+   * Fold `__TF__` / `__TF_CLIENTS__` sections (TensorFold rank-0 :8888) into
+   * `tfTelemetry`. Absent sections (legacy fixtures, mac/windows paths) leave
+   * the previous state untouched; an empty section marks the engine down.
+   * @param {Record<string, string>} sections
+   */
+  _absorbTensorfold(sections) {
+    if (!("TF" in sections)) return;
+    const metrics = parseTensorfoldMetrics(sections.TF);
+    if (!metrics) {
+      this.tfTelemetry = null;
+      return;
+    }
+    const clients = parseTfClients(sections.TF_CLIENTS ?? "");
+    const cur = { at: Date.now(), metrics, clients };
+    const deltas = deriveTfDeltas(this._tfPrev, cur);
+    this._tfPrev = cur;
+    this.tfTelemetry = {
+      serving: true,
+      at: cur.at,
+      tok_per_s: deltas.tok_per_s,
+      decode_tps: deltas.decode_tps,
+      prefill_s: deltas.prefill_s,
+      ttft_s: deltas.ttft_s,
+      kv_pct: metrics.kvRatio != null ? metrics.kvRatio * 100 : null,
+      running: metrics.running,
+      waiting: metrics.waiting,
+      clients: clients.map(labelClient),
+    };
+  }
+
+  /** Clear TensorFold state (host went away; next poll reseeds). */
+  resetTensorfold() {
+    this.tfTelemetry = null;
+    this._tfPrev = null;
+  }
+
   async _getRemoteGpu(executor = sshExec) {
     try {
       const vramRead = this._intelVram.stale;
@@ -2087,6 +2136,9 @@ export class SystemCollector {
         `printf '\\n__INTEL__\\n'; ${buildIntelProbeScript({ sudo: this._intelSudo.allowed && getSettings().intelVramSudo, vram: vramRead })}`,
         "printf '\\n__MEMINFO__\\n'; grep -E 'MemTotal|MemAvailable' /proc/meminfo 2>/dev/null",
         `printf '\\n__CLOCK_CAP__\\n'; ${CLOCK_CAP_CMD}`,
+        // TensorFold LLM telemetry + client sockets (optional; empty when the engine is down).
+        "printf '\\n__TF__\\n'; curl -sf --max-time 4 http://127.0.0.1:8888/metrics 2>/dev/null | head -c 131072",
+        "printf '\\n__TF_CLIENTS__\\n'; ss -Htn state established '( sport = :8888 )' 2>/dev/null",
       ].join("; ");
 
       const output = await executor(this.spark, cmd);
@@ -2104,6 +2156,7 @@ export class SystemCollector {
       const legacySections = legacy ? String(output).split("---") : [];
       const resolvedMeminfo = legacy ? (legacySections[3] || "").trim() : meminfoOut;
       const clockCapOut = section("CLOCK_CAP");
+      this._absorbTensorfold(sections);
       const cliDevices = this._parseGpuLines(legacy ? (legacySections[0] || "") : gpuOut, {
         source: this.isWindows ? "windows" : "nvidia",
       });

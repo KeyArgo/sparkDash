@@ -689,6 +689,33 @@ export interface SparkMetrics {
   tailscale?: TailscaleMetrics | null;
 }
 
+// ─── Fleet LLM telemetry (TensorFold, additive/nullable) ──
+export interface SparkLlmClient {
+  ip: string;
+  /** Human label from the server's client map; null = show bare IP. */
+  label: string | null;
+}
+
+export interface SparkLlmTelemetry {
+  /** Generated tokens / second over the last poll delta; null on first poll. */
+  tok_per_s: number | null;
+  decode_tps: number | null;
+  /** Mean prefill seconds per finished request over the delta; nullable. */
+  prefill_s: number | null;
+  /** Mean time-to-first-token over the delta; nullable. */
+  ttft_s: number | null;
+  /** KV-cache usage, percent; null when unreported. */
+  kv_pct: number | null;
+  running: number | null;
+  waiting: number | null;
+  clients: SparkLlmClient[];
+  /** guest alias → request count, last 10 min of guest-usage.jsonl. */
+  guests: Record<string, number>;
+  model: string | null;
+  /** True only while the engine's :8888 /metrics answered the last poll. */
+  serving: boolean;
+}
+
 // ─── Spark snapshot (server pushes this) ──────────────────
 export interface SparkSnapshot {
   id: string;
@@ -740,6 +767,8 @@ export interface SparkSnapshot {
   tailscaleMonitoring?: boolean;
   /** Hermes Agent update monitoring state (present in every snapshot). */
   hermes?: HermesStatus;
+  /** Fleet LLM telemetry (TensorFold); additive, nullable when no :8888 endpoint. */
+  llm?: SparkLlmTelemetry | null;
   hardware: HardwareInfo;
   metrics: SparkMetrics;
   /** Harness sessions by LLM port. Absent until the occupancy poller has a projection. */
