@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback, type CSSProperties } from "react";
+import { useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
 import type { SparkSnapshot } from "../../api/types";
 import { isLlmMonitoringEnabled } from "../../api/sparkRole";
 import { updateSpark, refreshSparkMetric, addLlmPort, removeLlmPort } from "../../api/client";
 import { SparkHeader } from "./SparkHeader";
+import { HealthList } from "../ui/HealthFindings";
 import { SparkActions } from "./SparkActions";
 import { GpuPanel } from "./GpuPanel";
+import { CpuPanel } from "./CpuPanel";
 import { RamPanel } from "./RamPanel";
 import { StoragePanel } from "./StoragePanel";
 import { NetworkPanel } from "./NetworkPanel";
@@ -16,79 +18,44 @@ import { ServingConfigPanel } from "./ServingConfigPanel";
 import { SparkRunPanel } from "./SparkRunPanel";
 import { ServingStrip } from "./ServingStrip";
 import { ChevronDownIcon } from "../ui/icons";
+import { LlmModelsPanel } from "./LlmModelsPanel";
+import { RocePanel } from "./RocePanel";
+import { UnifiedMemoryPanel } from "./UnifiedMemoryPanel";
+import "../../styles/spark.css";
+import { vramContextFor } from "../../shared/vramBreakdown";
 
 interface SparkPageProps {
   spark: SparkSnapshot;
+  /** Every unit's snapshot — lets a worker find its head's LLM endpoint. */
+  fleet?: SparkSnapshot[];
   temperatureUnit: "celsius" | "fahrenheit";
   /** Show "Copy image" in the benchmark dialogs (Settings, off by default). */
   benchShareImage?: boolean;
   /** Protected Spark and this session is not admin. */
   locked?: boolean;
+  /** GPU panel VRAM bar split by engine / system / free (Settings, on by default). */
+  showVramBreakdown?: boolean;
   onEdit?: () => void;
 }
 
-const SECTION_OPEN_KEYS = {
-  resources: "sparkdash.ui.section.resources",
-  services: "sparkdash.ui.section.services",
-} as const;
+type SparkView = "all" | "resources" | "services";
 
-function readSectionOpen(key: string, fallback = true): boolean {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === "0" || raw === "false") return false;
-    if (raw === "1" || raw === "true") return true;
-  } catch {
-    /* private mode / blocked storage */
-  }
-  return fallback;
-}
-
-function writeSectionOpen(key: string, open: boolean) {
-  try {
-    localStorage.setItem(key, open ? "1" : "0");
-  } catch {
-    /* ignore */
-  }
-}
-
-/** Clickable section title with chevron; collapses/expands the panels below. */
-function SectionHeading({
-  title,
-  open,
-  onToggle,
-  style,
-}: {
-  title: string;
-  open: boolean;
-  onToggle: () => void;
-  style?: CSSProperties;
-}) {
+/** Panel wrapper carrying its single-column (mobile) order as a CSS variable. */
+function Item({ order, children }: { order: number; children: ReactNode }) {
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-expanded={open}
-      className="md:col-span-2 flex w-full items-center gap-2 text-left font-normal leading-tight tracking-tight text-text-strong transition-colors hover:text-accent"
-      style={{
-        fontSize: "var(--density-overview-title)",
-        ...style,
-      }}
-    >
-      <ChevronDownIcon
-        className={`h-5 w-5 shrink-0 text-muted transition-transform duration-150 ${
-          open ? "" : "-rotate-90"
-        }`}
-      />
-      <span>{title}</span>
-    </button>
+    <div className="sp-item" style={{ ["--o" as string]: order } as CSSProperties}>
+      {children}
+    </div>
   );
 }
 
 export function SparkPage({
   spark,
+  fleet,
   temperatureUnit,
   benchShareImage = false,
   locked = false,
+  showVramBreakdown = true,
   onEdit,
 }: SparkPageProps) {
   const { metrics } = spark;
@@ -102,29 +69,6 @@ export function SparkPage({
   );
   const [showAddPort, setShowAddPort] = useState(false);
   const [newPortDraft, setNewPortDraft] = useState("");
-  const [resourcesOpen, setResourcesOpen] = useState(() =>
-    readSectionOpen(SECTION_OPEN_KEYS.resources, true)
-  );
-  const [servicesOpen, setServicesOpen] = useState(() =>
-    readSectionOpen(SECTION_OPEN_KEYS.services, true)
-  );
-
-  const toggleResources = useCallback(() => {
-    setResourcesOpen((prev) => {
-      const next = !prev;
-      writeSectionOpen(SECTION_OPEN_KEYS.resources, next);
-      return next;
-    });
-  }, []);
-
-  const toggleServices = useCallback(() => {
-    setServicesOpen((prev) => {
-      const next = !prev;
-      writeSectionOpen(SECTION_OPEN_KEYS.services, next);
-      return next;
-    });
-  }, []);
-
   // Sync when spark data changes (WS push)
   useEffect(() => {
     setDisabledDevices(spark.disabledDevices || []);
@@ -161,23 +105,26 @@ export function SparkPage({
     [spark.id]
   );
 
-  const handleAddPort = useCallback(async () => {
-    const port = parseInt(newPortDraft, 10);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return;
-    if (llmPorts.includes(port)) {
-      setNewPortDraft("");
-      setShowAddPort(false);
-      return;
-    }
-    try {
-      const result = await addLlmPort(spark.id, port);
-      setLlmPorts(result.llmPorts);
-      setNewPortDraft("");
-      setShowAddPort(false);
-    } catch (err) {
-      console.error("Failed to add LLM port:", err);
-    }
-  }, [spark.id, newPortDraft, llmPorts]);
+  const handleAddPort = useCallback(
+    async (portOverride?: number) => {
+      const port = portOverride ?? parseInt(newPortDraft, 10);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return;
+      if (llmPorts.includes(port)) {
+        setNewPortDraft("");
+        setShowAddPort(false);
+        return;
+      }
+      try {
+        const result = await addLlmPort(spark.id, port);
+        setLlmPorts(result.llmPorts);
+        setNewPortDraft("");
+        setShowAddPort(false);
+      } catch (err) {
+        console.error("Failed to add LLM port:", err);
+      }
+    },
+    [spark.id, newPortDraft, llmPorts]
+  );
 
   const handleRemovePort = useCallback(async (port: number) => {
     try {
@@ -191,25 +138,25 @@ export function SparkPage({
   const llmOn = isLlmMonitoringEnabled(spark);
   const comfyOn = Boolean(spark.comfyMonitoring);
   const tailscaleOn = Boolean(spark.tailscaleMonitoring);
-  /** First LLM + Comfy share a row when both are on. */
-  const primarySideBySide = llmOn && comfyOn;
   const showServices = llmOn || comfyOn;
+  // Everything on one page: hardware and services together (no sub-tabs).
+  const view: SparkView = showServices ? "all" : "resources";
+  const showSvc = showServices && view !== "resources";
+  // Models you start/stop with your own start.sh / stop.sh. Shown on every Spark and in every tab,
+  // so it is always easy to find (a worker may have its own scripts too).
+  const modelsPanel = <LlmModelsPanel spark={spark} />;
   const primaryPort = llmPorts[0];
   const extraPorts = llmPorts.slice(1);
-
-  /**
-   * Extra LLM ports (after the primary):
-   * - 1 extra → full-width own row
-   * - 2+ extras → 2-column pairs; if odd count, last one full-width alone
-   */
-  const extraLlmFullWidth = (extraIndex: number, extraCount: number) => {
-    if (extraCount === 1) return true;
-    if (extraCount % 2 === 1 && extraIndex === extraCount - 1) return true;
-    return false;
-  };
+  const unified = metrics.unifiedMemory;
+  const showUnified = spark.kind !== "host" && unified != null && unified.total > 0;
 
   const renderLlmPanel = (port: number, portIndex: number, className?: string) => {
-    const llmMetrics = metrics.llm?.[portIndex] ?? null;
+    // Match by the snapshot's own port so a panel never shows another port's
+    // backend (stale-array window after adding/switching ports); fall back to
+    // position for servers that don't yet report `port`.
+    const llmMetrics =
+      metrics.llm?.find((l) => l?.port != null && l.port === port) ??
+      (metrics.llm?.[portIndex]?.port == null ? (metrics.llm?.[portIndex] ?? null) : null);
     const canRemove = portIndex > 0;
     return (
       <LlmPanel
@@ -227,202 +174,189 @@ export function SparkPage({
     );
   };
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-page-gap)" }}>
-      <SparkHeader spark={spark} onEdit={onEdit} />
-      {/* Mobile-only action row (Update Hermes / Shutdown·Wake / Edit) — desktop keeps them in the header. */}
-      <SparkActions
-        spark={spark}
-        onEdit={onEdit}
-        className="flex flex-wrap items-center justify-end gap-2 px-1 py-1 sm:hidden"
-      />
-      <div className="spark-page grid grid-cols-1 md:grid-cols-2" style={{ gap: "var(--density-page-gap)" }}>
-        {llmOn && (
-          <ServingStrip
-            sparkId={spark.id}
-            ports={llmPorts}
-            llms={llmPorts.map((_, i) => metrics.llm?.[i])}
-            locked={locked}
-          />
-        )}
-        <SectionHeading
-          title="Resources"
-          open={resourcesOpen}
-          onToggle={toggleResources}
-          style={{ marginTop: "var(--density-page-gap)" }}
+  const addPort = llmOn ? (
+    showAddPort ? (
+      <div className="panel sp-add-port">
+        <input
+          type="number"
+          min={1}
+          max={65535}
+          inputMode="numeric"
+          placeholder="Port number"
+          value={newPortDraft}
+          onChange={(e) => setNewPortDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void handleAddPort();
+            }
+          }}
+          className="sp-input sp-input--port"
+          autoFocus
         />
-        {resourcesOpen && (
-          <>
-            {spark.kind === "host" ? (
-              /* Hosts: GPU spans the full left column; RAM → Network → Storage [→ Tailnet] stack in the right column */
-              <>
-                <GpuPanel
-                  gpu={metrics.gpu}
-                  sparkId={spark.id}
-                  temperatureUnit={temperatureUnit}
-                  className={tailscaleOn ? "md:row-span-4" : "md:row-span-3"}
-                />
-                <RamPanel
-                  ram={metrics.ram}
-                  cpu={metrics.cpu}
-                  sparkId={spark.id}
-                  temperatureUnit={temperatureUnit}
-                />
-                <NetworkPanel
-                  network={metrics.network}
-                  sparkId={spark.id}
-                  disabledInterfaces={disabledInterfaces}
-                  onDisabledChange={setDisabledInterfaces}
-                />
-                <StoragePanel
-                  storage={metrics.storage}
-                  sparkId={spark.id}
-                  disabledDevices={disabledDevices}
-                  onDisabledChange={setDisabledDevices}
-                  storagePollDisabled={storagePollDisabled}
-                  onStoragePollModeChange={handleStoragePollModeChange}
-                />
-                {tailscaleOn && <TailscalePanel tailscale={metrics.tailscale ?? null} />}
-              </>
-            ) : (
-              /* Resources layout: GPU spans the full left column; Storage + Network [+ Tailnet] stack in the right column */
-              <>
-                <GpuPanel
-                  gpu={metrics.gpu}
-                  cpu={metrics.cpu}
-                  sparkId={spark.id}
-                  temperatureUnit={temperatureUnit}
-                  className={tailscaleOn ? "md:row-span-3" : "md:row-span-2"}
-                />
-                <StoragePanel
-                  storage={metrics.storage}
-                  sparkId={spark.id}
-                  disabledDevices={disabledDevices}
-                  onDisabledChange={setDisabledDevices}
-                  storagePollDisabled={storagePollDisabled}
-                  onStoragePollModeChange={handleStoragePollModeChange}
-                />
-                <NetworkPanel
-                  network={metrics.network}
-                  sparkId={spark.id}
-                  disabledInterfaces={disabledInterfaces}
-                  onDisabledChange={setDisabledInterfaces}
-                />
-                {tailscaleOn && <TailscalePanel tailscale={metrics.tailscale ?? null} />}
-              </>
-            )}
-          </>
-        )}
-        {/*
-          Services layout:
-          - Primary LLM + ComfyUI → always same row, 2 columns (when both on)
-          - Alone → full width
-          - +1 LLM → own full-width row
-          - +2 LLMs → 2-column row; odd leftover → full-width row
-        */}
-        {showServices && (
-          <SectionHeading
-            title="Services"
-            open={servicesOpen}
-            onToggle={toggleServices}
-            style={{ marginTop: "var(--density-page-gap)" }}
-          />
-        )}
-        {showServices && servicesOpen && (
-          <>
-            {llmOn &&
-              primaryPort != null &&
-              (!(metrics.llm || []).some((row) => row?.modelId) || metrics.llm?.[0]?.modelId) &&
-              renderLlmPanel(
-                primaryPort,
-                0,
-                primarySideBySide ? undefined : "md:col-span-2"
-              )}
-            {comfyOn && (
-              <ComfyPanel
-                comfy={metrics.comfy ?? null}
-                comfyPort={spark.comfyPort ?? 8188}
-                sparkId={spark.id}
-                lanIp={spark.lanIp}
-                className={primarySideBySide ? undefined : "md:col-span-2"}
-              />
-            )}
-            {llmOn &&
-              extraPorts.map((port, j) =>
-                (metrics.llm || []).some((row) => row?.modelId) && !metrics.llm?.[j + 1]?.modelId
-                  ? null
-                  : renderLlmPanel(
-                      port,
-                      j + 1,
-                      extraLlmFullWidth(j, extraPorts.length) ? "md:col-span-2" : undefined
-                    )
-              )}
-            {llmOn &&
-              (showAddPort ? (
-                <div className="md:col-span-2 rounded-lg border border-border bg-surface p-3">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      min={1}
-                      max={65535}
-                      inputMode="numeric"
-                      placeholder="Port number"
-                      value={newPortDraft}
-                      onChange={(e) => setNewPortDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          void handleAddPort();
-                        }
-                      }}
-                      className="w-32 rounded-md border border-border bg-surface-elevated px-3 py-1.5 font-tabular text-sm text-text outline-none focus:border-accent"
-                      autoFocus
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void handleAddPort()}
-                      disabled={!newPortDraft.trim()}
-                      className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50"
-                    >
-                      Add
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAddPort(false);
-                        setNewPortDraft("");
-                      }}
-                      className="rounded border border-border px-3 py-1.5 text-xs text-muted hover:bg-surface-hover"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setShowAddPort(true)}
-                  className="md:col-span-2 rounded-lg border border-dashed border-border bg-transparent p-3 text-xs text-muted hover:border-accent hover:text-accent transition-colors"
-                >
-                  + Add LLM port
-                </button>
-              ))}
-          </>
-        )}
-        <div className="md:col-span-2">
-          <SparkRunPanel sparkId={spark.id} locked={locked} />
-        </div>
-        <div className="md:col-span-2">
-          <ModelPanel
-            sparkId={spark.id}
-            locked={locked}
-            vllmPort={llmPorts.find((p) => p !== 11434) ?? llmPorts[0]}
-          />
-        </div>
-        <div className="md:col-span-2">
-          <ServingConfigPanel sparkId={spark.id} locked={locked} />
+        <button
+          type="button"
+          onClick={() => void handleAddPort()}
+          disabled={!newPortDraft.trim()}
+          className="btn btn--sm btn--primary"
+        >
+          Add
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setShowAddPort(false);
+            setNewPortDraft("");
+          }}
+          className="btn btn--sm"
+        >
+          Cancel
+        </button>
+        <div className="sp-add-port__presets" role="group" aria-label="Server presets">
+          <span className="sp-hint">Presets:</span>
+          <button
+            type="button"
+            title="LM Studio default port"
+            onClick={() => void handleAddPort(1234)}
+            className="btn btn--sm"
+          >
+            LM Studio :1234
+          </button>
+          <button
+            type="button"
+            title="Ollama default port"
+            onClick={() => void handleAddPort(11434)}
+            className="btn btn--sm"
+          >
+            Ollama :11434
+          </button>
+          <button
+            type="button"
+            title="TensorFold default port"
+            onClick={() => void handleAddPort(8888)}
+            className="btn btn--sm"
+          >
+            TensorFold :8888
+          </button>
         </div>
       </div>
+    ) : (
+      <button type="button" onClick={() => setShowAddPort(true)} className="sp-add-port-btn">
+        + Add LLM port
+      </button>
+    )
+  ) : null;
+
+  const comfyPanel = comfyOn ? (
+    <ComfyPanel
+      comfy={metrics.comfy ?? null}
+      comfyPort={spark.comfyPort ?? 8188}
+      sparkId={spark.id}
+      lanIp={spark.lanIp}
+    />
+  ) : null;
+
+  return (
+    <div className="sp">
+      <SparkHeader spark={spark} onEdit={onEdit} />
+      {/* Mobile-only action row (Update Hermes / Edit / Power) — desktop keeps them in the header. */}
+      <SparkActions spark={spark} onEdit={onEdit} className="sp-mobile-actions flex sm:hidden" />
+      {spark.online ? <HealthList findings={spark.health} /> : null}
+      {llmOn && (
+        <ServingStrip
+          sparkId={spark.id}
+          ports={llmPorts}
+          llms={llmPorts.map((_, i) => spark.metrics.llm?.[i])}
+          locked={locked}
+        />
+      )}
+
+      {(
+        /* Two independent columns (xl+): hardware on the left, services + I/O on the
+           right. Below xl everything stacks in the Item order (GPU, memory, LLM first). */
+        <div className="sp-cols">
+          <div className="sp-col">
+            <Item order={1}>
+              <GpuPanel
+                gpu={metrics.gpu}
+                vramContext={showVramBreakdown ? vramContextFor(spark, fleet) : null}
+                sparkId={spark.id}
+                temperatureUnit={temperatureUnit}
+                chip={spark.hardware.gpuChip}
+                hideMemory={showUnified}
+              />
+            </Item>
+            {/* Unified memory (or RAM on a dedicated host) and CPU sit side by side (they stack when the column is narrow). */}
+            <Item order={2}>
+              <div className="sp-pair">
+                {showUnified && <UnifiedMemoryPanel um={unified} gpu={metrics.gpu} llm={metrics.llm} />}
+                <CpuPanel
+                  cpu={metrics.cpu}
+                  hardware={spark.hardware}
+                  sparkId={spark.id}
+                  temperatureUnit={temperatureUnit}
+                />
+                {/* Dedicated hosts have system RAM instead of a unified pool: CPU and RAM side by side. */}
+                {spark.kind === "host" && <RamPanel ram={metrics.ram} sparkId={spark.id} />}
+                {/* Models is the third column of the row (Windows PCs have no launchers). */}
+                {spark.platform !== "windows" && modelsPanel}
+              </div>
+            </Item>
+          </div>
+          <div className="sp-col">
+            {view === "all" && showSvc && llmOn && primaryPort != null && (
+              <Item order={3}>{renderLlmPanel(primaryPort, 0)}</Item>
+            )}
+            {view === "all" && showSvc && comfyPanel && <Item order={4}>{comfyPanel}</Item>}
+            {view === "all" &&
+              showSvc &&
+              llmOn &&
+              extraPorts.map((port, j) => (
+                <Item key={port} order={10 + j}>
+                  {renderLlmPanel(port, j + 1)}
+                </Item>
+              ))}
+            {view === "all" && showSvc && addPort && <Item order={30}>{addPort}</Item>}
+            <Item order={7}>
+              <StoragePanel
+                storage={metrics.storage}
+                sparkId={spark.id}
+                disabledDevices={disabledDevices}
+                onDisabledChange={setDisabledDevices}
+                storagePollDisabled={storagePollDisabled}
+                onStoragePollModeChange={handleStoragePollModeChange}
+              />
+            </Item>
+            <Item order={8}>
+              <NetworkPanel
+                network={metrics.network}
+                sparkId={spark.id}
+                disabledInterfaces={disabledInterfaces}
+                onDisabledChange={setDisabledInterfaces}
+              />
+            </Item>
+            {metrics.roce && metrics.roce.devices.length > 0 && (
+              <Item order={8}>
+                <RocePanel roce={metrics.roce} />
+              </Item>
+            )}
+            {tailscaleOn && (
+              <Item order={9}>
+                <TailscalePanel tailscale={metrics.tailscale ?? null} />
+              </Item>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* sparkdeck control plane: sparkrun jobs, model management, serving config */}
+      <SparkRunPanel sparkId={spark.id} locked={locked} />
+      <ModelPanel
+        sparkId={spark.id}
+        locked={locked}
+        vllmPort={llmPorts.find((p) => p !== 11434) ?? llmPorts[0]}
+      />
+      <ServingConfigPanel sparkId={spark.id} locked={locked} />
     </div>
   );
 }

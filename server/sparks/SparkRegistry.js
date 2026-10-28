@@ -1,8 +1,9 @@
 import fs from "fs";
 import { SPARKS_JSON_PATH, LLM_PORT } from "../config.js";
 import { loadSecrets, saveSecrets } from "../secretsStore.js";
-import { atomicWrite } from "../util/atomicWrite.js";
-import { isValidSparkId } from "../validate.js";
+import { atomicWrite, quarantineCorrupt } from "../util/atomicWrite.js";
+import { isValidSparkId, normalizeSshPort } from "../validate.js";
+import { llmProbeHost } from "../collectors/llmHost.js";
 
 /**
  * SparkRegistry — loads, persists, and emits change events for the Spark list.
@@ -161,11 +162,25 @@ export class SparkRegistry {
     };
     const nextSparks = [...this._sparks];
     nextSparks[idx] = this._normalizeConfig(updated);
+    // Secrets belong to the host they were entered for. LLM keys also reach a
+    // remote unit's SSH host, through the bench tunnel.
+    const sshTarget = (s) => [s.isLocal, s.ssh.user, s.ssh.host || s.lanIp].join(" ");
+    const llmTarget = (s) => [llmProbeHost(s), !s.isLocal && (s.ssh.host || s.lanIp)].join(" ");
+    const prevPasswords = this._passwords;
+    const prevLlmApiKeys = this._llmApiKeys;
     this._save(nextSparks);
     try {
+      if (sshTarget(nextSparks[idx]) !== sshTarget(prev)) this._storePassword(id, "");
+      if (llmTarget(nextSparks[idx]) !== llmTarget(prev)) this.pruneLlmApiKeys(id, []);
       if (hasPasswordUpdate) this._storePassword(id, passwordUpdate);
     } catch (err) {
       this._save(this._sparks);
+      // The unit is back on its old host, so its secrets come back too.
+      if (this._passwords !== prevPasswords || this._llmApiKeys !== prevLlmApiKeys) {
+        this._saveSecrets(prevPasswords, prevLlmApiKeys);
+        this._passwords = prevPasswords;
+        this._llmApiKeys = prevLlmApiKeys;
+      }
       throw err;
     }
     this._sparks = nextSparks;
@@ -271,6 +286,7 @@ export class SparkRegistry {
         this._save();
       } else {
         console.error("[SparkRegistry] Failed to load sparks.json:", err.message);
+        if (err instanceof SyntaxError) quarantineCorrupt(SPARKS_JSON_PATH, "SparkRegistry", err);
         this._sparks = [];
       }
     }
@@ -390,6 +406,12 @@ export class SparkRegistry {
       .map((p) => parseInt(p, 10))
       .filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535)
       .sort((a, b) => a - b);
+  }
+
+  /** The saved Bearer key for one LLM port (server-side use only; never returned by the API). */
+  getLlmApiKey(id, port) {
+    const key = this._llmApiKeys.get(id)?.[String(port)];
+    return key && String(key).trim() ? String(key) : null;
   }
 
   hasLlmApiKey(id, port) {
@@ -579,6 +601,8 @@ export class SparkRegistry {
       host: sshIn.host || "",
       user: sshIn.user || "root",
       auth: sshIn.auth === "pass" ? "pass" : "key",
+      /** TCP port for SSH. Missing or invalid values fall back to 22. */
+      port: normalizeSshPort(sshIn.port) ?? 22,
     };
     const llmPorts = this._normalizeLlmPorts(config.llmPorts ?? config.llmPort);
     const role = this._normalizeRole(config);
@@ -588,14 +612,27 @@ export class SparkRegistry {
       id: config.id,
       name: config.name || config.id,
       /** Unit type: spark (DGX Spark) or host (dedicated GPU Linux box). */
-      kind: config.kind === "host" ? "host" : "spark",
+      kind: config.kind === "host" || config.platform === "windows" ? "host" : "spark",
+      /**
+       * Optional OS platform override for SSH-collected units: "darwin" for
+       * macOS hosts (Mac Studio etc.). Absent/"linux" keeps the existing
+       * /proc-based collectors. See SystemCollector isMac.
+       */
+      platform:
+        config.platform === "darwin" ? "darwin" : config.platform === "windows" ? "windows" : "linux",
       lanIp: config.lanIp || "",
+      /** Optional pinned HTTP target for LLM probes/actions; SSH still uses ssh.host. */
+      llmHost:
+        typeof config.llmHost === "string" && config.llmHost.trim()
+          ? config.llmHost.trim()
+          : null,
       cx7Ip: config.cx7Ip || null,
       /** Optional user override for Wake-on-LAN. Empty → use detectedMacAddress. */
       macAddress: config.macAddress || null,
       /** Last MAC seen on enP7s7 (auto; not set via public PATCH). */
       detectedMacAddress: config.detectedMacAddress || null,
-      isLocal: Boolean(config.isLocal),
+      // A Windows PC is always reached over SSH (the local collectors read /proc).
+      isLocal: config.platform !== "windows" && Boolean(config.isLocal),
       /** false keeps the record on disk but out of the dashboard and monitors. */
       enabled: config.enabled !== false,
       ssh,
@@ -624,12 +661,13 @@ export class SparkRegistry {
       /**
        * Opt-in tailnet presence via `tailscale status --json` (default false).
        */
-      tailscaleMonitoring: Boolean(config.tailscaleMonitoring),
+      // Hermes and Tailnet probes are bash scripts; Windows units do not run them.
+      tailscaleMonitoring: config.platform !== "windows" && Boolean(config.tailscaleMonitoring),
       /**
        * Opt-in: Hermes Agent CLI is installed on this machine. When enabled,
        * the SparkMonitor checks for updates and allows one-click `hermes update`.
        */
-      hermesMonitoring: Boolean(config.hermesMonitoring),
+      hermesMonitoring: config.platform !== "windows" && Boolean(config.hermesMonitoring),
       disabledDevices: Array.isArray(config.disabledDevices) ? config.disabledDevices : [],
       disabledInterfaces: Array.isArray(config.disabledInterfaces) ? config.disabledInterfaces : [],
       storagePollDisabled: Boolean(config.storagePollDisabled),
